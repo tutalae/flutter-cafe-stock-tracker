@@ -127,4 +127,4 @@ This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md
 ## 📞 Contact
 
 * **Kopkrit  Saikhiao** - https://www.linkedin.com/in/kopkritsaikhiao/ - kksaikheaw@gmail.com 
-* Project Link: [https://github.com/YourGitHubUsername/flutter-cafe-stock-tracker](https://github.com/YourGitHubUsername/flutter-cafe-stock-tracker)
+* Project Link: [https://github.com/tutalae/flutter-cafe-stock-tracker](https://github.com/YourGitHubUsername/flutter-cafe-stock-tracker)
