@@ -78,17 +78,7 @@ class GoogleSheetService {
 
   final String _serviceAccountJson = r'''
   {
-    "type": "service_account",
-    "project_id": "daily-cafe-stock-tracker",
-    "private_key_id": "PASTE_YOUR_PRIVATE_KEY_ID_HERE", 
-    "private_key": "PASTE_YOUR_ENTIRE_PRIVATE_KEY_CONTENT_HERE_EXACTLY_AS_COPIED_FROM_JSON_INCLUDING_NEWLINES", 
-    "client_email": "daily-cafe-stock-tracker@daily-cafe-stock-tracker.iam.gserviceaccount.com",
-    "client_id": "PASTE_YOUR_CLIENT_ID_HERE",
-    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-    "token_uri": "https://oauth2.googleapis.com/token",
-    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/daily-cafe-stock-tracker.iam.gserviceaccount.com",
-    "universe_domain": "googleapis.com"
+  ------------------------------------------------
   }
   ''';
 
@@ -607,11 +597,12 @@ class _MainScreenState extends State<MainScreen> {
   Set<String> _beanNameSuggestions = {};
   Set<String> _inventoryNameSuggestions = {}; // already present
 
+  // This function is now responsible for setting the edit state and navigating
   void _editEntry(Record record, int rowIndex) {
     setState(() {
       _currentEditRecord = record;
       _editingRecordIndex = rowIndex;
-      _selectedIndex = 1;
+      _selectedIndex = 1; // Navigate to the "Daily Entry" tab
     });
   }
 
@@ -771,6 +762,9 @@ class _MainScreenState extends State<MainScreen> {
           DashboardContent(
             dashboardData: _dashboardData,
             refreshDashboardData: _refreshAllData,
+            // Pass the entire _historyData and the editEntry callback
+            allHistoryData: _historyData,
+            onTapDashboardItem: _editEntry,
           ),
           DailyEntryContent(
             submitEntry: _handleEntrySubmission,
@@ -835,11 +829,15 @@ class _MainScreenState extends State<MainScreen> {
 class DashboardContent extends StatefulWidget {
   final List<Record> dashboardData;
   final Future<void> Function() refreshDashboardData;
+  final List<Map<String, dynamic>> allHistoryData; // Add this to access full history with row index
+  final void Function(Record record, int rowIndex) onTapDashboardItem; // New callback for tapping
 
   const DashboardContent({
     super.key,
     required this.dashboardData,
     required this.refreshDashboardData,
+    required this.allHistoryData, // Initialize
+    required this.onTapDashboardItem, // Initialize
   });
 
   @override
@@ -926,71 +924,97 @@ class _DashboardContentState extends State<DashboardContent> {
                 grinderAmountDisplay = "N/A"; // Not applicable for SO or Other Inventory
               }
 
+              // Find the corresponding record in historyData to get the rowIndex
+              // This is a heuristic, assuming the dashboard item corresponds to the *latest* entry
+              // for that roast type/bean name. A more robust solution might involve storing
+              // the rowIndex directly in the Record model if fetched from Sheets.
+              final Map<String, dynamic>? recordInHistory = widget.allHistoryData.firstWhere(
+                (historyItem) {
+                  final historyRecord = Record.fromMap(historyItem);
+                  return historyRecord.date == item.date &&
+                         historyRecord.shift == item.shift &&
+                         historyRecord.roastType == item.roastType &&
+                         historyRecord.beanName == item.beanName;
+                },
+                orElse: () => {}, // Return an empty map if not found
+              );
+
+              final int? rowIndexForEdit = recordInHistory?['__rowIndex'] as int?;
 
               return Card(
                 margin: const EdgeInsets.only(bottom: 10),
-                child: Padding(
-                  padding: const EdgeInsets.all(15.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        coffeeName,
-                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.bold,
-                              color: Colors.blueGrey[900],
-                            ),
-                      ),
-                      Text(
-                        "Last updated: ${item.date} (${item.shift})",
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
-                      ),
-                      const SizedBox(height: 10),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  "Overall: $mainStockAmountDisplay",
-                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                        fontWeight: FontWeight.bold,
-                                        color: amountColorMain,
-                                      ),
-                                ),
-                                Text("overall stock", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
-                              ],
-                            ),
-                          ),
-                          if (item.roastType != 'Single Origin' && item.roastType != 'Other Inventory')
+                child: InkWell( // Use InkWell for tap feedback
+                  onTap: () {
+                    if (rowIndexForEdit != null) {
+                      widget.onTapDashboardItem(item, rowIndexForEdit);
+                    } else {
+                      // Optionally show a snackbar or log if the record can't be found for editing
+                      debugPrint("Could not find row index for dashboard item: ${item.roastType} - ${item.beanName}");
+                    }
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.all(15.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          coffeeName,
+                          style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.blueGrey[900],
+                              ),
+                        ),
+                        Text(
+                          "Last updated: ${item.date} (${item.shift})",
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
+                        ),
+                        const SizedBox(height: 10),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
                             Expanded(
                               child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.end,
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    "Grinder: $grinderAmountDisplay",
+                                    "Overall: $mainStockAmountDisplay",
                                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                                           fontWeight: FontWeight.bold,
-                                          color: amountColorGrinder,
+                                          color: amountColorMain,
                                         ),
                                   ),
-                                  Text("in grinder", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
+                                  Text("overall stock", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
                                 ],
                               ),
                             ),
-                        ],
-                      ),
-                      if (item.notes.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 8.0),
-                          child: Text(
-                            "Notes: ${item.notes}",
-                            style: TextStyle(fontSize: 10, fontStyle: FontStyle.italic, color: Colors.grey[500]),
-                          ),
+                            if (item.roastType != 'Single Origin' && item.roastType != 'Other Inventory')
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Text(
+                                      "Grinder: $grinderAmountDisplay",
+                                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                            fontWeight: FontWeight.bold,
+                                            color: amountColorGrinder,
+                                          ),
+                                    ),
+                                    Text("in grinder", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
+                                  ],
+                                ),
+                              ),
+                          ],
                         ),
-                    ],
+                        if (item.notes.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8.0),
+                            child: Text(
+                              "Notes: ${item.notes}",
+                              style: TextStyle(fontSize: 10, fontStyle: FontStyle.italic, color: Colors.grey[500]),
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                 ),
               );
