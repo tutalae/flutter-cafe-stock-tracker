@@ -78,7 +78,7 @@ class GoogleSheetService {
 
   final String _serviceAccountJson = r'''
   {
-  ------------------------------------------------
+  ---------------------------------------------
   }
   ''';
 
@@ -438,17 +438,11 @@ Map<String, dynamic> validateAndPrepareRecord({
 
 
   // Validate stock/grinder fields based on roast type and shift
-  if (isSingleOrigin) {
+  if (isSingleOrigin || isOtherInventory) { // Unified validation for SO and Other Inventory
     if (isMorningShift && soInStr.isEmpty) {
-      validationErrors.add("Single Origin Total Stock (IN)");
+      validationErrors.add("${isOtherInventory ? 'Inventory' : 'Single Origin'} Total Stock (IN)");
     } else if (!isMorningShift && soOutStr.isEmpty) {
-      validationErrors.add("Single Origin Total Stock (OUT)");
-    }
-  } else if (isOtherInventory) { // NEW Validation for Other Inventory
-    if (isMorningShift && lmMorningStockStr.isEmpty) { // Using LM stock fields for Inventory
-      validationErrors.add("Inventory Total Stock (IN)");
-    } else if (!isMorningShift && lmEveningStockStr.isEmpty) { // Using LM stock fields for Inventory
-      validationErrors.add("Inventory Total Stock (OUT)");
+      validationErrors.add("${isOtherInventory ? 'Inventory' : 'Single Origin'} Total Stock (OUT)");
     }
   } else { // Light/Medium Roasts
     if (isMorningShift) {
@@ -482,13 +476,10 @@ Map<String, dynamic> validateAndPrepareRecord({
     int eventVal = isOtherInventory ? 0 : (int.tryParse(eventStr) ?? 0);
     int employeeShotVal = isOtherInventory ? 0 : (int.tryParse(employeeShotStr) ?? 0);
 
-    if (isSingleOrigin) {
+    if (isSingleOrigin || isOtherInventory) { // Unified data assignment for SO and Other Inventory
       morningStockToSheet = double.tryParse(soInStr) ?? 0.0;
       eveningStockToSheet = double.tryParse(soOutStr) ?? 0.0;
-    } else if (isOtherInventory) { // NEW Data assignment for Other Inventory
-      morningStockToSheet = double.tryParse(lmMorningStockStr) ?? 0.0; // Repurposed for Inventory IN
-      eveningStockToSheet = double.tryParse(lmEveningStockStr) ?? 0.0; // Repurposed for Inventory OUT
-      // Explicitly clear/set coffee-specific grinder fields to 0 for inventory
+      // Explicitly clear/set coffee-specific grinder fields to 0 for SO/inventory
       morningInVal = 0.0;
       addOnMorningVal = 0.0;
       addOnAfternoonVal = 0.0;
@@ -1076,8 +1067,9 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
   final TextEditingController _eveningOutController = TextEditingController();
   final TextEditingController _lmMorningStockController = TextEditingController();
   final TextEditingController _lmEveningStockController = TextEditingController();
-  final TextEditingController _soInController = TextEditingController();
-  final TextEditingController _soOutController = TextEditingController();
+  // Renamed for clarity to be used by both Single Origin and Other Inventory
+  final TextEditingController _soInventoryInController = TextEditingController();
+  final TextEditingController _soInventoryOutController = TextEditingController();
   final TextEditingController _throwAwayController = TextEditingController(text: '0');
   final TextEditingController _testController = TextEditingController(text: '0');
   final TextEditingController _eventController = TextEditingController(text: '0');
@@ -1117,8 +1109,9 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
       _eveningOutController.text = widget.currentEditRecord!.eveningOut == 0.0 ? '' : widget.currentEditRecord!.eveningOut.toString();
       _lmMorningStockController.text = widget.currentEditRecord!.morningStock == 0.0 ? '' : widget.currentEditRecord!.morningStock.toString();
       _lmEveningStockController.text = widget.currentEditRecord!.eveningStock == 0.0 ? '' : widget.currentEditRecord!.eveningStock.toString();
-      _soInController.text = widget.currentEditRecord!.morningStock == 0.0 ? '' : widget.currentEditRecord!.morningStock.toString();
-      _soOutController.text = widget.currentEditRecord!.eveningStock == 0.0 ? '' : widget.currentEditRecord!.eveningStock.toString();
+      // Assign to unified controllers for SO and Other Inventory
+      _soInventoryInController.text = widget.currentEditRecord!.morningStock == 0.0 ? '' : widget.currentEditRecord!.morningStock.toString();
+      _soInventoryOutController.text = widget.currentEditRecord!.eveningStock == 0.0 ? '' : widget.currentEditRecord!.eveningStock.toString();
 
       _throwAwayController.text = widget.currentEditRecord!.throwAway.toString();
       _testController.text = widget.currentEditRecord!.test.toString();
@@ -1136,8 +1129,8 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
       _eveningOutController.clear();
       _lmMorningStockController.clear();
       _lmEveningStockController.clear();
-      _soInController.clear();
-      _soOutController.clear();
+      _soInventoryInController.clear(); // Clear unified controllers
+      _soInventoryOutController.clear(); // Clear unified controllers
       _throwAwayController.text = '0';
       _testController.text = '0';
       _eventController.text = '0';
@@ -1157,8 +1150,8 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
     _eveningOutController.dispose();
     _lmMorningStockController.dispose();
     _lmEveningStockController.dispose();
-    _soInController.dispose();
-    _soOutController.dispose();
+    _soInventoryInController.dispose(); // Dispose unified controllers
+    _soInventoryOutController.dispose(); // Dispose unified controllers
     _throwAwayController.dispose();
     _testController.dispose();
     _eventController.dispose();
@@ -1181,37 +1174,28 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
         // Clear irrelevant fields based on Roast Type
         if (!_isSingleOrigin && !_isOtherInventory) { // Coffee Beans
           _beanNameController.clear();
-          _soInController.clear();
-          _soOutController.clear();
-        } else if (_isSingleOrigin) { // Single Origin
+          _soInventoryInController.clear(); // Clear unified SO/Inventory fields
+          _soInventoryOutController.clear(); // Clear unified SO/Inventory fields
+        } else { // Single Origin or Other Inventory
           _morningInController.clear();
           _addOnMorningController.clear();
           _addOnAfternoonController.clear();
           _eveningOutController.clear();
-          _lmMorningStockController.clear(); // Clear LM stock fields for SO
-          _lmEveningStockController.clear(); // Clear LM stock fields for SO
-        } else if (_isOtherInventory) { // Other Inventory
-          _morningInController.clear();
-          _addOnMorningController.clear();
-          _addOnAfternoonController.clear();
-          _eveningOutController.clear();
-          _soInController.clear(); // Clear SO stock fields for Other Inventory
-          _soOutController.clear(); // Clear SO stock fields for Other Inventory
+          _lmMorningStockController.clear();
+          _lmEveningStockController.clear();
         }
 
         // Clear irrelevant fields based on Shift
         if (_isMorningShift) {
           _addOnAfternoonController.clear();
           _eveningOutController.clear();
-          if (!_isSingleOrigin && !_isOtherInventory) _lmEveningStockController.clear(); // Clear LM Evening stock for LM morning
-          if (_isSingleOrigin) _soOutController.clear(); // Clear SO Out for SO morning
-          if (_isOtherInventory) _lmEveningStockController.clear(); // Clear Inventory Out for Inventory morning
+          if (!_isSingleOrigin && !_isOtherInventory) _lmEveningStockController.clear();
+          if (_isSingleOrigin || _isOtherInventory) _soInventoryOutController.clear(); // Clear unified OUT for morning
         } else { // Evening Shift
           _morningInController.clear();
           _addOnMorningController.clear();
-          if (!_isSingleOrigin && !_isOtherInventory) _lmMorningStockController.clear(); // Clear LM Morning stock for LM evening
-          if (_isSingleOrigin) _soInController.clear(); // Clear SO In for SO evening
-          if (_isOtherInventory) _lmMorningStockController.clear(); // Clear Inventory In for Inventory evening
+          if (!_isSingleOrigin && !_isOtherInventory) _lmMorningStockController.clear();
+          if (_isSingleOrigin || _isOtherInventory) _soInventoryInController.clear(); // Clear unified IN for evening
         }
 
         // Shot-related fields are hidden for Other Inventory
@@ -1404,7 +1388,7 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
         ),
         const SizedBox(height: 15),
 
-        // --- Coffee Beans Specific Fields (Hidden for Other Inventory) ---
+        // --- Coffee Beans Specific Fields (Hidden for Single Origin and Other Inventory) ---
         Visibility(
           visible: !_isSingleOrigin && !_isOtherInventory && _isMorningShift,
           child: TextField(
@@ -1478,11 +1462,11 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
         ),
         const SizedBox(height: 15),
 
-        // --- Single Origin / Other Inventory Specific Fields ---
+        // --- Single Origin / Other Inventory Specific Fields (Unified) ---
         Visibility(
           visible: (_isSingleOrigin || _isOtherInventory) && _isMorningShift,
           child: TextField(
-            controller: _soInController,
+            controller: _soInventoryInController, // Use unified controller
             decoration: InputDecoration(
               labelText: "${_selectedRoastType} Total Stock (IN)",
               helperText: "Total ${_selectedRoastType} stock at start of morning shift (includes new deliveries)",
@@ -1494,7 +1478,7 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
         Visibility(
           visible: (_isSingleOrigin || _isOtherInventory) && !_isMorningShift,
           child: TextField(
-            controller: _soOutController,
+            controller: _soInventoryOutController, // Use unified controller
             decoration: InputDecoration(
               labelText: "${_selectedRoastType} Total Stock (OUT)",
               helperText: "Total ${_selectedRoastType} stock at end of evening shift",
@@ -1598,8 +1582,8 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
                     eveningOutStr: _eveningOutController.text,
                     lmMorningStockStr: _lmMorningStockController.text,
                     lmEveningStockStr: _lmEveningStockController.text,
-                    soInStr: _soInController.text,
-                    soOutStr: _soOutController.text,
+                    soInStr: _soInventoryInController.text, // Pass unified controller value
+                    soOutStr: _soInventoryOutController.text, // Pass unified controller value
                     throwAwayStr: _throwAwayController.text,
                     testStr: _testController.text,
                     eventStr: _eventController.text,
