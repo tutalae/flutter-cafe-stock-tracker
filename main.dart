@@ -24,6 +24,7 @@ class Record {
   String notes;
   String? updateTime; // New field for Update Time
   int? rowIndex; // New field to store the row index from Google Sheet
+  double? minimumStock; // NEW: Minimum stock value for the item
 
   Record({
     required this.date,
@@ -43,6 +44,7 @@ class Record {
     this.notes = '',
     this.updateTime, // Initialize the new field
     this.rowIndex, // Initialize the new rowIndex field
+    this.minimumStock, // NEW: Initialize minimumStock
   });
 
   factory Record.fromMap(Map<String, dynamic> map) {
@@ -64,6 +66,7 @@ class Record {
       notes: map['Notes/Comments']?.toString() ?? '',
       updateTime: map['Update Time']?.toString(), // Parse the new field
       rowIndex: map['__rowIndex'] as int?, // Assign rowIndex from the map
+      minimumStock: double.tryParse(map['Min Stock Value']?.toString() ?? ''), // NEW: Parse Min Stock Value
     );
   }
 }
@@ -74,7 +77,8 @@ const List<String> expectedHeaders = [
   'Add On Morning (g)', 'Add On Afternoon (g)', 'Evening Out (g)',
   'Morning Stock (g)', 'Evening Stock (g)', 'Throw Away (Shot)',
   'Test (Shot)', 'Event (Shot)', 'Employee (Shot)', 'Notes/Comments',
-  'Update Time' // New column header
+  'Update Time', // New column header
+  'Min Stock Value', // NEW: New column for minimum stock
 ];
 
 // --- GoogleSheetService Class ---
@@ -150,12 +154,14 @@ class GoogleSheetService {
       return [];
     }
     try {
-      // Adjusted range to include the new column. 'P' is the 16th letter.
+      // Adjusted range to include the new column. 'Q' is the 17th letter.
       final response = await _sheetsApi!.spreadsheets.values.get(
         _spreadsheetId!,
-        '$worksheetName!A:P',
+        '$worksheetName!A:Q',
       );
-      final List<List<dynamic>> allValues = response.values ?? [];
+      // Explicitly cast to List<List<dynamic>> to handle Object? types
+      final List<List<dynamic>> allValues = (response.values ?? []).map((row) => row.map((e) => e as dynamic).toList()).toList();
+
 
       if (allValues.isEmpty || allValues.length < 2) {
         return [];
@@ -176,6 +182,7 @@ class GoogleSheetService {
           }
         }
 
+        // Parse numerical fields, ensuring they are correctly typed
         record['Morning In (g)'] = double.tryParse(record['Morning In (g)']?.toString() ?? '0') ?? 0.0;
         record['Add On Morning (g)'] = double.tryParse(record['Add On Morning (g)']?.toString() ?? '0') ?? 0.0;
         record['Add On Afternoon (g)'] = double.tryParse(record['Add On Afternoon (g)']?.toString() ?? '0') ?? 0.0;
@@ -186,6 +193,8 @@ class GoogleSheetService {
         record['Test (Shot)'] = int.tryParse(record['Test (Shot)']?.toString() ?? '0') ?? 0;
         record['Event (Shot)'] = int.tryParse(record['Event (Shot)']?.toString() ?? '0') ?? 0;
         record['Employee (Shot)'] = int.tryParse(record['Employee (Shot)']?.toString() ?? '0') ?? 0;
+        // NEW: Parse Min Stock Value
+        record['Min Stock Value'] = double.tryParse(record['Min Stock Value']?.toString() ?? '');
 
         record['__rowIndex'] = i + 2; // +2 because sheet is 1-indexed and has a header row
         recordsWithIndex.add(record);
@@ -220,6 +229,7 @@ class GoogleSheetService {
         record.employeeShot,
         record.notes,
         DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()), // Auto-set Update Time
+        record.minimumStock, // NEW: Include minimumStock
       ];
 
       await _sheetsApi!.spreadsheets.values.append(
@@ -242,7 +252,7 @@ class GoogleSheetService {
       return false;
     }
     try {
-      // Re-verify column order for update: Date, Shift, Roast Type, Bean Name, Morning In, Add On Morning, Add On Afternoon, Evening Out, Morning Stock, Evening Stock, Throw Away, Test, Event, Employee, Notes, Update Time
+      // Re-verify column order: Date, Shift, Roast Type, Bean Name, Morning In, Add On Morning, Add On Afternoon, Evening Out, Morning Stock, Evening Stock, Throw Away, Test, Event, Employee, Notes, Update Time, Min Stock Value
       final List<dynamic> alignedRowData = [
         record.date,
         record.shift,
@@ -260,6 +270,7 @@ class GoogleSheetService {
         record.employeeShot,
         record.notes,
         DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()), // Auto-update time
+        record.minimumStock, // NEW: Include minimumStock
       ];
 
 
@@ -295,7 +306,7 @@ String formatQuantityDisplay(dynamic value, {String unit = 'g', String roastType
   if (parsedValue == null) return value.toString(); // Fallback if not a number
 
   // For Other Inventory, show 0 instead of N/A if value is 0
-  if (roastType == 'Other Inventory') {
+  if (roastType == 'Other Inventory' || unit == 'units') { // Added unit == 'units' for general non-gram items
     if (parsedValue == 0) return '0';
     return parsedValue == parsedValue.toInt() ? "${parsedValue.toInt()}" : parsedValue.toStringAsFixed(parsedValue.truncateToDouble() == parsedValue ? 0 : 2);
   }
@@ -312,7 +323,7 @@ String adjustDate(String currentDateStr, int days) {
     final newDate = currentDate.add(Duration(days: days));
     return DateFormat('yyyy-MM-dd').format(newDate);
   } catch (e) {
-    debugPrint("Error adjusting date: $e");
+      debugPrint("Error adjusting date: $e");
     return currentDateStr;
   }
 }
@@ -346,29 +357,43 @@ Future<List<Record>> getDashboardData(GoogleSheetService sheetService) async {
       if (currentDate.isAfter(existingDate)) {
         latestStock[itemKey] = item;
       } else if (currentDate.isAtSameMomentAs(existingDate)) {
-        // If same date, use updateTime if available, otherwise prioritize Evening over Morning
+        // If same date, use updateTime as the primary tie-breaker
         final currentUpdateTime = DateTime.tryParse(item.updateTime ?? '');
         final existingUpdateTime = DateTime.tryParse(existingItem.updateTime ?? '');
 
+        // If both have update times, the newer update time wins
         if (currentUpdateTime != null && existingUpdateTime != null) {
           if (currentUpdateTime.isAfter(existingUpdateTime)) {
             latestStock[itemKey] = item;
           }
-        } else {
-          // Fallback to shift comparison if updateTime is not available for both or parsing fails
+          // If current is older or same, keep existing (no change needed)
+        }
+        // If only current has update time, current wins (it's a newer update)
+        else if (currentUpdateTime != null && existingUpdateTime == null) {
+          latestStock[itemKey] = item;
+        }
+        // If only existing has update time, existing wins (it's a recorded update vs. a non-updated or unparseable current)
+        // No 'else if' here, as the default will be to keep existing if none of the above conditions are met for 'item'
+        else {
+          // If neither has a valid update time (or both are null), fall back to shift and stock data
+          // Prioritize Evening over Morning if shifts are different
           if (item.shift == 'Evening' && existingItem.shift == 'Morning') {
             latestStock[itemKey] = item;
           }
-          // If both are Evening, or both Morning for same date, keep the one with more data
+          // If shifts are the same, or current is Morning and existing is Evening,
+          // then keep the one with more "stock" data as a final tie-breaker.
           else if (item.shift == existingItem.shift) {
-            if (item.eveningStock != 0 && existingItem.eveningStock == 0) {
-              latestStock[itemKey] = item;
-            } else if (item.morningStock != 0 && existingItem.morningStock == 0 && item.shift == 'Morning') {
-              latestStock[itemKey] = item;
-            } else if ((item.roastType == 'Single Origin' || item.roastType == 'Other Inventory')
-                && item.beanName.isNotEmpty && existingItem.beanName.isEmpty) {
-              latestStock[itemKey] = item;
-            }
+             // Prefer the one with actual stock values if the other has zero
+             if (item.eveningStock != 0 && existingItem.eveningStock == 0) {
+                 latestStock[itemKey] = item;
+             } else if (item.morningStock != 0 && existingItem.morningStock == 0 && item.shift == 'Morning') {
+                 latestStock[itemKey] = item;
+             }
+             // Or prefer the one with a bean name if applicable
+             else if ((item.roastType == 'Single Origin' || item.roastType == 'Other Inventory')
+                 && item.beanName.isNotEmpty && existingItem.beanName.isEmpty) {
+                 latestStock[itemKey] = item;
+             }
           }
         }
       }
@@ -394,9 +419,9 @@ Future<List<Record>> getDashboardData(GoogleSheetService sheetService) async {
     }
 
     // Filter out if stock is empty (both evening and morning stock are 0)
-    if (record.eveningStock == 0 && record.morningStock == 0) {
-      return false; // Exclude if stock is 0
-    }
+    // if (record.eveningStock == 0 && record.morningStock == 0) { // Keep this logic if you want to hide if stock is literally zero
+    //   return false;
+    // }
 
     return true; // Keep the record if it passes all filters or is an exception
   }).toList();
@@ -463,6 +488,7 @@ Map<String, dynamic> validateAndPrepareRecord({
   String eventStr = '0',
   String employeeShotStr = '0',
   String notes = '',
+  String minStockStr = '', // NEW: Min Stock Value
 }) {
   final List<String> validationErrors = [];
 
@@ -511,6 +537,11 @@ Map<String, dynamic> validateAndPrepareRecord({
     }
   }
 
+  // NEW: Validate Minimum Stock
+  if (minStockStr.isNotEmpty && double.tryParse(minStockStr) == null) {
+    validationErrors.add("Minimum Stock must be a valid number");
+  }
+
 
   if (validationErrors.isNotEmpty) {
     return {
@@ -526,6 +557,7 @@ Map<String, dynamic> validateAndPrepareRecord({
     double eveningOutVal = 0.0;
     double morningStockToSheet = 0.0;
     double eveningStockToSheet = 0.0;
+    double? minStockVal = double.tryParse(minStockStr); // NEW: Parse minimum stock
 
     int throwAwayVal = isOtherInventory ? 0 : (int.tryParse(throwAwayStr) ?? 0);
     int testVal = isOtherInventory ? 0 : (int.tryParse(testStr) ?? 0);
@@ -567,6 +599,7 @@ Map<String, dynamic> validateAndPrepareRecord({
       event: eventVal,
       employeeShot: employeeShotVal,
       notes: notes,
+      minimumStock: minStockVal, // NEW: Assign minimumStock
     );
 
     return {
@@ -691,6 +724,7 @@ class _MainScreenState extends State<MainScreen> {
         notes: '',
         updateTime: null, // Clear update time for new entry
         rowIndex: null, // Important: Nullify rowIndex to ensure it's treated as a new entry
+        minimumStock: record.minimumStock, // NEW: Pass the minimum stock to the templated record
       );
       rowIndexToPass = null;
     }
@@ -787,6 +821,7 @@ class _MainScreenState extends State<MainScreen> {
     String eventStr = '0',
     String employeeShotStr = '0',
     String notes = '',
+    String minStockStr = '', // NEW: minStockStr parameter
   }) async {
     final validationResult = validateAndPrepareRecord(
       date: date,
@@ -806,6 +841,7 @@ class _MainScreenState extends State<MainScreen> {
       eventStr: eventStr,
       employeeShotStr: employeeShotStr,
       notes: notes,
+      minStockStr: minStockStr, // NEW: Pass minStockStr
     );
 
     if (!validationResult['success']) {
@@ -920,7 +956,6 @@ class _MainScreenState extends State<MainScreen> {
 class DashboardContent extends StatefulWidget {
   final List<Record> dashboardData;
   final Future<void> Function() refreshDashboardData;
-  // Removed allHistoryData as it's no longer needed for finding rowIndex
   final void Function(Record record, int rowIndex) onTapDashboardItem;
 
   const DashboardContent({
@@ -935,6 +970,51 @@ class DashboardContent extends StatefulWidget {
 }
 
 class _DashboardContentState extends State<DashboardContent> {
+  List<Record> _lowStockItems = [];
+  List<Record> _normalStockItems = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _categorizeStockItems();
+  }
+
+  @override
+  void didUpdateWidget(covariant DashboardContent oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.dashboardData != oldWidget.dashboardData) {
+      _categorizeStockItems();
+    }
+  }
+
+  void _categorizeStockItems() {
+    _lowStockItems = [];
+    _normalStockItems = [];
+    for (var item in widget.dashboardData) {
+      // Determine the current effective stock for comparison
+      double currentStock = item.eveningStock;
+      if (currentStock == 0) {
+        currentStock = item.morningStock;
+      }
+
+      // Check for low stock condition
+      if (item.minimumStock != null && item.minimumStock! > 0 && currentStock < item.minimumStock!) {
+        _lowStockItems.add(item);
+      } else {
+        _normalStockItems.add(item);
+      }
+    }
+    // Sort low stock items by how low they are (lowest ratio first)
+    _lowStockItems.sort((a, b) {
+      double stockA = a.eveningStock == 0.0 ? a.morningStock : a.eveningStock;
+      double stockB = b.eveningStock == 0.0 ? b.morningStock : b.eveningStock;
+      double ratioA = a.minimumStock != null && a.minimumStock! > 0 ? stockA / a.minimumStock! : double.infinity;
+      double ratioB = b.minimumStock != null && b.minimumStock! > 0 ? stockB / b.minimumStock! : double.infinity;
+      return ratioA.compareTo(ratioB);
+    });
+  }
+
+
   @override
   Widget build(BuildContext context) {
     return RefreshIndicator(
@@ -951,6 +1031,24 @@ class _DashboardContentState extends State<DashboardContent> {
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 20),
+
+          // --- Low Stock Alerts Section ---
+          if (_lowStockItems.isNotEmpty) ...[
+            Text(
+              "🚨 Low Stock Alerts 🚨",
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.red[800],
+                  ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 10),
+            ..._lowStockItems.map((item) => _buildStockCard(context, item, isLowStock: true)).toList(),
+            const Divider(height: 30, thickness: 2, color: Colors.redAccent),
+            const SizedBox(height: 20),
+          ],
+
+          // --- All Other Stock Items Section ---
           if (widget.dashboardData.isEmpty)
             Padding(
               padding: const EdgeInsets.all(20.0),
@@ -960,140 +1058,179 @@ class _DashboardContentState extends State<DashboardContent> {
                 style: TextStyle(color: Colors.grey[600]),
               ),
             )
-          else ...widget.dashboardData.map((item) {
-            String coffeeName;
-            if (item.roastType == 'Single Origin' || item.roastType == 'Other Inventory') {
-              coffeeName = "${item.roastType}: ${item.beanName}";
-            } else {
-              coffeeName = item.roastType;
-            }
-            String mainStockAmountDisplay = 'N/A';
-            String grinderAmountDisplay = 'N/A';
-            Color amountColorGrinder = Colors.green[600]!;
-            Color amountColorMain = Colors.blueGrey[900]!;
-
-            double overallStockAmount = item.eveningStock;
-            if (overallStockAmount == 0) {
-              overallStockAmount = item.morningStock;
-            }
-            mainStockAmountDisplay = formatQuantityDisplay(overallStockAmount, unit: 'g', roastType: item.roastType);
-
-            final double? parsedMainStockAmount = double.tryParse(mainStockAmountDisplay.replaceAll('g', '').replaceAll('N/A', '0'));
-            if (parsedMainStockAmount != null && parsedMainStockAmount > 0) {
-              if (parsedMainStockAmount <= 1000 && item.roastType != 'Other Inventory') {
-                amountColorMain = Colors.orange[700]!;
-              }
-              if (parsedMainStockAmount <= 500 && item.roastType != 'Other Inventory') {
-                amountColorMain = Colors.red[500]!;
-              }
-            } else if (parsedMainStockAmount == 0) {
-              amountColorMain = Colors.grey;
-            }
-
-            if (item.roastType != 'Single Origin' && item.roastType != 'Other Inventory') {
-              double grinderCalculation = 0.0;
-              if (item.shift == 'Morning') {
-                grinderCalculation = item.morningIn + item.addOnMorning;
-              } else if (item.shift == 'Evening') {
-                grinderCalculation = item.eveningOut + item.addOnAfternoon;
-              }
-              grinderAmountDisplay = formatQuantityDisplay(grinderCalculation, unit: 'g', roastType: item.roastType);
-              final double? parsedGrinderAmount = double.tryParse(grinderAmountDisplay.replaceAll('g', '').replaceAll('N/A', '0'));
-              if (parsedGrinderAmount != null && parsedGrinderAmount <= 100 && parsedGrinderAmount > 0) {
-                amountColorGrinder = Colors.red[500]!;
-              } else if (parsedGrinderAmount == 0) {
-                amountColorGrinder = Colors.grey;
-              }
-            } else {
-              grinderAmountDisplay = "N/A";
-            }
-
-            // Directly use item.rowIndex
-            final int? rowIndexForEdit = item.rowIndex;
-
-            return Card(
-              margin: const EdgeInsets.only(bottom: 10),
-              child: InkWell(
-                onTap: () {
-                  if (rowIndexForEdit != null) {
-                    widget.onTapDashboardItem(item, rowIndexForEdit);
-                  } else {
-                    debugPrint("Error: Record missing rowIndex for dashboard item: ${item.roastType} - ${item.beanName}");
-                    // Optionally, show a snackbar to the user
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Could not edit this item. Row index missing.'), backgroundColor: Colors.red),
-                    );
-                  }
-                },
-                child: Padding(
-                  padding: const EdgeInsets.all(15.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        coffeeName,
-                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.bold,
-                              color: Colors.blueGrey[900],
-                            ),
-                      ),
-                      Text(
-                        "Last updated: ${item.date} (${item.shift})",
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
-                      ),
-                      const SizedBox(height: 10),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  "Overall: ${mainStockAmountDisplay}",
-                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                        fontWeight: FontWeight.bold,
-                                        color: amountColorMain,
-                                      ),
-                                ),
-                                Text("overall stock", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
-                              ],
-                            ),
-                          ),
-                          if (item.roastType != 'Single Origin' && item.roastType != 'Other Inventory')
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.end,
-                                children: [
-                                  Text(
-                                    "Grinder: ${grinderAmountDisplay}",
-                                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                          fontWeight: FontWeight.bold,
-                                          color: amountColorGrinder,
-                                        ),
-                                  ),
-                                  Text("in grinder", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
-                                ],
-                              ),
-                            ),
-                        ],
-                      ),
-                      if (item.notes.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 8.0),
-                          child: Text(
-                            "Notes: ${item.notes}",
-                            style: TextStyle(fontSize: 10, fontStyle: FontStyle.italic, color: Colors.grey[500]),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            );
-          }).toList(),
+          else ..._normalStockItems.map((item) => _buildStockCard(context, item, isLowStock: false)).toList(),
           const SizedBox(height: 20),
         ],
+      ),
+    );
+  }
+
+  Widget _buildStockCard(BuildContext context, Record item, {required bool isLowStock}) {
+    String coffeeName;
+    if (item.roastType == 'Single Origin' || item.roastType == 'Other Inventory') {
+      coffeeName = "${item.roastType}: ${item.beanName}";
+    } else {
+      coffeeName = item.roastType;
+    }
+    String mainStockAmountDisplay = 'N/A';
+    String grinderAmountDisplay = 'N/A';
+    Color amountColorGrinder = Colors.green[600]!; // Default green
+    Color amountColorMain = Colors.blueGrey[900]!;
+    Color cardColor = Colors.blueGrey.shade50; // Default for normal stock items
+    FontWeight mainStockFontWeight = FontWeight.bold; // Default to bold
+
+    double overallStockAmount = item.eveningStock;
+    if (overallStockAmount == 0) {
+      overallStockAmount = item.morningStock;
+    }
+    mainStockAmountDisplay = formatQuantityDisplay(overallStockAmount, unit: 'g', roastType: item.roastType);
+
+    final double? parsedMainStockAmount = double.tryParse(overallStockAmount.toString());
+
+
+    // Logic for main stock color and card background
+    if (item.minimumStock != null && item.minimumStock! > 0 && parsedMainStockAmount != null) {
+      if (parsedMainStockAmount < item.minimumStock!) { // Highlight red if below min
+        cardColor = Colors.red.shade300; // Stronger red for card background
+        amountColorMain = Colors.red[900]!; // Darker red for text
+        mainStockFontWeight = FontWeight.w900; // Extra bold
+      } else if (parsedMainStockAmount <= (item.minimumStock! * 1.5) && item.roastType != 'Other Inventory') { // Example: within 150% of min stock
+        cardColor = Colors.orange.shade200; // More noticeable orange for approaching low stock
+        amountColorMain = Colors.orange[900]!; // Darker orange for text
+      }
+    }
+    // If stock is exactly 0 and no specific minimum is set (or min is 0), still show grey
+    if (parsedMainStockAmount == 0) {
+      amountColorMain = Colors.grey;
+    }
+
+
+    if (item.roastType != 'Single Origin' && item.roastType != 'Other Inventory') {
+      double grinderCalculation = 0.0;
+      // Display morning in for morning shift, evening out for evening shift
+      if (item.shift == 'Morning') {
+        grinderCalculation = item.morningIn; // Show morning in
+      } else if (item.shift == 'Evening') {
+        grinderCalculation = item.eveningOut; // Show evening out
+      }
+      grinderAmountDisplay = formatQuantityDisplay(grinderCalculation, unit: 'g', roastType: item.roastType);
+      final double? parsedGrinderAmount = double.tryParse(grinderAmountDisplay.replaceAll('g', '').replaceAll('N/A', '0'));
+
+      // Grinder text color logic
+      if (parsedGrinderAmount == 0) {
+        amountColorGrinder = Colors.grey;
+      } else if (parsedGrinderAmount != null && parsedGrinderAmount > 0 && parsedGrinderAmount <= 100) {
+        amountColorGrinder = Colors.red[500]!; // Grinder-specific low threshold
+      }
+
+      // Override grinder color if overall stock is below minimum for the item
+      if (item.minimumStock != null && item.minimumStock! > 0 && parsedMainStockAmount != null && parsedMainStockAmount < item.minimumStock!) {
+        amountColorGrinder = Colors.red[900]!; // Make grinder text red if overall item is critically low
+      }
+
+    } else {
+      grinderAmountDisplay = "N/A";
+    }
+
+    // Directly use item.rowIndex
+    final int? rowIndexForEdit = item.rowIndex;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      color: cardColor, // Apply dynamic card color
+      child: InkWell(
+        onTap: () {
+          if (rowIndexForEdit != null) {
+            widget.onTapDashboardItem(item, rowIndexForEdit);
+          } else {
+            debugPrint("Error: Record missing rowIndex for dashboard item: ${item.roastType} - ${item.beanName}");
+            // Optionally, show a snackbar to the user
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Could not edit this item. Row index missing.'), backgroundColor: Colors.red),
+            );
+          }
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(15.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                coffeeName,
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.blueGrey[900],
+                    ),
+              ),
+              Text(
+                "Last updated: ${item.date} (${item.shift})",
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Text(
+                              "Overall: ${mainStockAmountDisplay}",
+                              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    fontWeight: mainStockFontWeight, // Apply dynamic font weight
+                                    color: amountColorMain, // Apply dynamic color
+                                  ),
+                            ),
+                            if (item.minimumStock != null && item.minimumStock! > 0 && parsedMainStockAmount != null && parsedMainStockAmount < item.minimumStock!)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 8.0),
+                                child: Icon(Icons.warning, color: Colors.red[800], size: 24), // Warning icon
+                              ),
+                          ],
+                        ),
+                        Text("overall stock", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
+                      ],
+                    ),
+                  ),
+                  if (item.roastType != 'Single Origin' && item.roastType != 'Other Inventory')
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            "Grinder: ${grinderAmountDisplay}",
+                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                  color: amountColorGrinder, // Apply dynamic color
+                                ),
+                          ),
+                          Text("in grinder", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+              if (item.minimumStock != null && item.minimumStock! > 0)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8.0),
+                  child: Text(
+                    "Minimum: ${formatQuantityDisplay(item.minimumStock, unit: item.roastType.contains('Roast') || item.roastType == 'Single Origin' ? 'g' : 'units')}", // Display min stock
+                    style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic, color: Colors.blueGrey[500]),
+                  ),
+                ),
+              if (item.notes.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8.0),
+                  child: Text(
+                    "Notes: ${item.notes}",
+                    style: TextStyle(fontSize: 10, fontStyle: FontStyle.italic, color: Colors.grey[500]),
+                  ),
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1119,6 +1256,7 @@ class DailyEntryContent extends StatefulWidget {
     String eventStr,
     String employeeShotStr,
     String notes,
+    String minStockStr, // NEW: minStockStr parameter
   }) submitEntry;
   final Record? currentEditRecord;
   final VoidCallback clearEditState;
@@ -1158,6 +1296,7 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
   final TextEditingController _eventController = TextEditingController(text: '0');
   final TextEditingController _employeeShotController = TextEditingController(text: '0');
   final TextEditingController _notesController = TextEditingController();
+  final TextEditingController _minStockController = TextEditingController(); // NEW: Controller for minimum stock
 
   String _selectedShift = 'Morning';
   String? _selectedRoastType = 'Light Roast';
@@ -1171,8 +1310,10 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
   void initState() {
     super.initState();
     _initializeForm();
-    // Listen for changes to beanNameController to fetch last record
+    // Listen for changes to beanNameController and RoastType dropdown to fetch last record
     _beanNameController.addListener(_fetchAndDisplayLastRecord);
+    // Initial fetch since _selectedRoastType is set in _initializeForm
+    _fetchAndDisplayLastRecord();
   }
 
   @override
@@ -1180,7 +1321,6 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
     super.didUpdateWidget(oldWidget);
     if (widget.currentEditRecord != oldWidget.currentEditRecord) {
       _initializeForm();
-      _fetchAndDisplayLastRecord(); // Re-fetch on edit record change
     }
     // Also re-fetch if sheetService itself somehow changes (unlikely for this app)
     if (widget.sheetService != oldWidget.sheetService) {
@@ -1230,6 +1370,7 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
       _eventController.text = widget.currentEditRecord!.event.toString();
       _employeeShotController.text = widget.currentEditRecord!.employeeShot.toString();
       _notesController.text = widget.currentEditRecord!.notes;
+      _minStockController.text = widget.currentEditRecord!.minimumStock == null ? '' : widget.currentEditRecord!.minimumStock!.toString(); // NEW: Populate minimum stock
 
     } else {
       // This is for a completely new, blank entry (e.g., directly clicking 'Add Entry' tab)
@@ -1253,9 +1394,9 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
       _eventController.text = '0';
       _employeeShotController.text = '0';
       _notesController.clear();
+      _minStockController.clear(); // NEW: Clear minimum stock
     }
     _updateDependentFields();
-    _fetchAndDisplayLastRecord(); // Initial fetch for last record based on default/edited values
   }
 
   void _updateDependentFields() {
@@ -1286,7 +1427,7 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
         _addOnAfternoonController.clear();
         _eveningOutController.clear();
         _lmEveningStockController.clear();
-        _soInventoryOutController.clear();
+        _soInventoryInController.clear();
       } else {
         _morningInController.clear();
         _addOnMorningController.clear();
@@ -1302,6 +1443,7 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
     if (_selectedRoastType == null || _selectedRoastType!.isEmpty) {
       setState(() {
         _lastRecordForSelectedType = null;
+        _minStockController.clear(); // Clear minimum stock if no roast type
       });
       return;
     }
@@ -1332,27 +1474,45 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
         latestDate = recordDate;
         latestUpdateTime = recordUpdateTime;
       } else if (recordDate.isAtSameMomentAs(latestDate!)) {
-        // If same date, prioritize by update time
-        if (recordUpdateTime != null && latestUpdateTime != null) {
-          if (recordUpdateTime.isAfter(latestUpdateTime)) {
+        // If same date, use updateTime as the primary tie-breaker
+        final currentUpdateTime = DateTime.tryParse(record.updateTime ?? ''); // Use record's update time
+        final existingUpdateTime = DateTime.tryParse(latestRecord!.updateTime ?? ''); // Use latestRecord's update time
+
+        // If both have update times, the newer update time wins
+        if (currentUpdateTime != null && existingUpdateTime != null) {
+          if (currentUpdateTime.isAfter(existingUpdateTime)) {
             latestRecord = record;
             latestDate = recordDate;
             latestUpdateTime = recordUpdateTime;
           }
-        } else if (recordUpdateTime != null && latestUpdateTime == null) {
-          // Current record has update time, latest doesn't
+          // If current is older or same, keep existing (no change needed)
+        }
+        // If only current has update time, current wins (it's a newer update)
+        else if (currentUpdateTime != null && existingUpdateTime == null) {
           latestRecord = record;
           latestDate = recordDate;
           latestUpdateTime = recordUpdateTime;
-        } else if (recordUpdateTime == null && latestUpdateTime != null) {
-          // Latest has update time, current doesn't (keep latest)
-          continue;
-        } else {
-          // Neither has update time, or both don't, then prioritize Evening over Morning
-          if (record.shift == 'Evening' && latestRecord.shift == 'Morning') {
+        }
+        // If only existing has update time, existing wins (it's a recorded update vs. a non-updated or unparseable current)
+        // No 'else if' here, as the default will be to keep existing if none of the above conditions are met for 'item'
+        else {
+          // If neither has a valid update time (or both are null), fall back to shift and stock data
+          // Prioritize Evening over Morning if shifts are different
+          if (record.shift == 'Evening' && latestRecord!.shift == 'Morning') { // Corrected: Use latestRecord
             latestRecord = record;
             latestDate = recordDate;
             latestUpdateTime = recordUpdateTime;
+          }
+          // If both are Evening, or both Morning for same date, keep the one with more data
+          else if (record.shift == latestRecord!.shift) { // Corrected: Use latestRecord
+            if (record.eveningStock != 0 && latestRecord!.eveningStock == 0) { // Corrected: Use latestRecord
+              latestRecord = record;
+            } else if (record.morningStock != 0 && latestRecord!.morningStock == 0 && record.shift == 'Morning') { // Corrected: Use latestRecord
+              latestRecord = record;
+            } else if ((record.roastType == 'Single Origin' || record.roastType == 'Other Inventory')
+                && record.beanName.isNotEmpty && latestRecord!.beanName.isEmpty) { // Corrected: Use latestRecord
+              latestRecord = record;
+            }
           }
         }
       }
@@ -1360,6 +1520,12 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
 
     setState(() {
       _lastRecordForSelectedType = latestRecord;
+      // Populate minimum stock field from the latest record, but only if it's a new entry (not editing existing)
+      // If currentEditRecord is null, it's a new entry, so auto-fill min stock
+      // If currentEditRecord is not null but rowIndex is null, it's a template, also auto-fill min stock
+      if (widget.currentEditRecord == null || widget.currentEditRecord!.rowIndex == null) {
+        _minStockController.text = latestRecord?.minimumStock?.toString() ?? '';
+      }
     });
   }
 
@@ -1402,6 +1568,7 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
     TextInputType keyboardType = TextInputType.text,
     bool enabled = true,
     List<String>? suggestions,
+    VoidCallback? onSubmitted,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1418,7 +1585,9 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
             },
             onSelected: (String selection) {
               controller.text = selection;
-              _fetchAndDisplayLastRecord(); // Fetch last record when bean name is selected
+              // Trigger a fetch for last record when a suggestion is selected
+              _fetchAndDisplayLastRecord();
+              if (onSubmitted != null) onSubmitted();
             },
             fieldViewBuilder: (BuildContext context, TextEditingController fieldTextEditingController, FocusNode fieldFocusNode, void Function() onFieldSubmitted) {
               if (fieldTextEditingController.text != controller.text) {
@@ -1436,7 +1605,11 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
                 onChanged: (value) {
                   controller.text = value;
                   // Debounce this call if performance is an issue for frequent typing
+                  // For now, call directly to keep _lastRecordForSelectedType updated
                   _fetchAndDisplayLastRecord();
+                },
+                onFieldSubmitted: (_) {
+                  if (onSubmitted != null) onSubmitted();
                 },
               );
             },
@@ -1450,6 +1623,9 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
             ),
             keyboardType: keyboardType,
             enabled: enabled,
+            onFieldSubmitted: (_) {
+              if (onSubmitted != null) onSubmitted();
+            },
           ),
         const SizedBox(height: 16.0),
       ],
@@ -1568,6 +1744,8 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
                         _buildLastRecordDetail('Event (Shots):', formatQuantityDisplay(_lastRecordForSelectedType!.event, unit: 'shot')),
                         _buildLastRecordDetail('Employee (Shots):', formatQuantityDisplay(_lastRecordForSelectedType!.employeeShot, unit: 'shot')),
                       ],
+                      if (_lastRecordForSelectedType!.minimumStock != null)
+                        _buildLastRecordDetail('Minimum Stock:', formatQuantityDisplay(_lastRecordForSelectedType!.minimumStock, unit: _selectedRoastType!.contains('Roast') || _selectedRoastType! == 'Single Origin' ? 'g' : 'units')),
                       if (_lastRecordForSelectedType!.notes.isNotEmpty)
                         _buildLastRecordDetail('Notes:', _lastRecordForSelectedType!.notes),
                     ],
@@ -1638,6 +1816,12 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
                 keyboardType: TextInputType.number,
               ),
             ],
+            // NEW: Minimum Stock Value input field
+            _buildTextField(
+              controller: _minStockController,
+              labelText: 'Minimum Stock Value (${_selectedRoastType!.contains('Roast') || _selectedRoastType! == 'Single Origin' ? 'g' : 'units'})',
+              keyboardType: TextInputType.number,
+            ),
             _buildTextField(
               controller: _notesController,
               labelText: 'Notes/Comments',
@@ -1664,6 +1848,7 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
                   eventStr: _eventController.text,
                   employeeShotStr: _employeeShotController.text,
                   notes: _notesController.text,
+                  minStockStr: _minStockController.text, // NEW: Pass minStockStr
                 );
               },
               child: Text(widget.currentEditRecord == null || widget.currentEditRecord!.rowIndex == null ? 'Add Stock Entry' : 'Submit Stock Entry'),
@@ -1727,6 +1912,7 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
     _eventController.dispose();
     _employeeShotController.dispose();
     _notesController.dispose();
+    _minStockController.dispose(); // NEW: Dispose minimum stock controller
     super.dispose();
   }
 }
@@ -1852,6 +2038,7 @@ class _HistoryContentState extends State<HistoryContent> {
                         DataColumn(label: Text('Emp', style: TextStyle(fontWeight: FontWeight.bold))),
                         DataColumn(label: Text('Notes', style: TextStyle(fontWeight: FontWeight.bold))),
                         DataColumn(label: Text('Update Time', style: TextStyle(fontWeight: FontWeight.bold))),
+                        DataColumn(label: Text('Min Stock', style: TextStyle(fontWeight: FontWeight.bold))), // NEW: Min Stock Column
                         DataColumn(label: Text('Edit', style: TextStyle(fontWeight: FontWeight.bold))),
                       ],
                       rows: _filteredHistoryData.map((itemMap) {
@@ -1888,6 +2075,7 @@ class _HistoryContentState extends State<HistoryContent> {
                         String testDisplay = formatQuantityDisplay(item.test, unit: 'shot');
                         String eventDisplay = formatQuantityDisplay(item.event, unit: 'shot');
                         String employeeShotDisplay = formatQuantityDisplay(item.employeeShot, unit: 'shot');
+                        String minStockDisplay = item.minimumStock != null ? formatQuantityDisplay(item.minimumStock, unit: item.roastType.contains('Roast') || item.roastType == 'Single Origin' ? 'g' : 'units') : 'N/A'; // NEW: Min Stock Display
 
                         return DataRow(
                           cells: [
@@ -1905,6 +2093,7 @@ class _HistoryContentState extends State<HistoryContent> {
                             DataCell(Text(employeeShotDisplay)),
                             DataCell(Text(item.notes.isNotEmpty ? item.notes : 'N/A')),
                             DataCell(Text(item.updateTime ?? 'N/A')),
+                            DataCell(Text(minStockDisplay)), // NEW: Min Stock Value
                             DataCell(
                               IconButton(
                                 icon: const Icon(Icons.edit),
