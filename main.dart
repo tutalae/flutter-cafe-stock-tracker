@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle; // Import for loading assets
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:intl/intl.dart';
 import 'package:googleapis/sheets/v4.dart' as sheets;
 import 'package:googleapis_auth/auth_io.dart' as auth;
 import 'dart:convert';
-// import 'dart:io'; // Keep this commented out for web or if using embedded JSON string
-
 
 // --- Data Model ---
 class Record {
@@ -24,6 +22,8 @@ class Record {
   int event;
   int employeeShot;
   String notes;
+  String? updateTime; // New field for Update Time
+  int? rowIndex; // New field to store the row index from Google Sheet
 
   Record({
     required this.date,
@@ -41,6 +41,8 @@ class Record {
     this.event = 0,
     this.employeeShot = 0,
     this.notes = '',
+    this.updateTime, // Initialize the new field
+    this.rowIndex, // Initialize the new rowIndex field
   });
 
   factory Record.fromMap(Map<String, dynamic> map) {
@@ -60,6 +62,8 @@ class Record {
       event: int.tryParse(map['Event (Shot)']?.toString() ?? '0') ?? 0,
       employeeShot: int.tryParse(map['Employee (Shot)']?.toString() ?? '0') ?? 0,
       notes: map['Notes/Comments']?.toString() ?? '',
+      updateTime: map['Update Time']?.toString(), // Parse the new field
+      rowIndex: map['__rowIndex'] as int?, // Assign rowIndex from the map
     );
   }
 }
@@ -69,7 +73,8 @@ const List<String> expectedHeaders = [
   'Date', 'Shift', 'Roast Type', 'Bean Name (if SO)', 'Morning In (g)',
   'Add On Morning (g)', 'Add On Afternoon (g)', 'Evening Out (g)',
   'Morning Stock (g)', 'Evening Stock (g)', 'Throw Away (Shot)',
-  'Test (Shot)', 'Test (Shot)', 'Event (Shot)', 'Employee (Shot)', 'Notes/Comments'
+  'Test (Shot)', 'Event (Shot)', 'Employee (Shot)', 'Notes/Comments',
+  'Update Time' // New column header
 ];
 
 // --- GoogleSheetService Class ---
@@ -145,9 +150,10 @@ class GoogleSheetService {
       return [];
     }
     try {
+      // Adjusted range to include the new column. 'P' is the 16th letter.
       final response = await _sheetsApi!.spreadsheets.values.get(
         _spreadsheetId!,
-        '$worksheetName!A:O',
+        '$worksheetName!A:P',
       );
       final List<List<dynamic>> allValues = response.values ?? [];
 
@@ -166,7 +172,7 @@ class GoogleSheetService {
           if (colIdx < rowValues.length) {
             record[headers[colIdx]] = rowValues[colIdx];
           } else {
-            record[headers[colIdx]] = '';
+            record[headers[colIdx]] = ''; // Ensure all headers have a value, even if empty
           }
         }
 
@@ -181,7 +187,7 @@ class GoogleSheetService {
         record['Event (Shot)'] = int.tryParse(record['Event (Shot)']?.toString() ?? '0') ?? 0;
         record['Employee (Shot)'] = int.tryParse(record['Employee (Shot)']?.toString() ?? '0') ?? 0;
 
-        record['__rowIndex'] = i + 2;
+        record['__rowIndex'] = i + 2; // +2 because sheet is 1-indexed and has a header row
         recordsWithIndex.add(record);
       }
       return recordsWithIndex;
@@ -213,6 +219,7 @@ class GoogleSheetService {
         record.event,
         record.employeeShot,
         record.notes,
+        DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()), // Auto-set Update Time
       ];
 
       await _sheetsApi!.spreadsheets.values.append(
@@ -235,7 +242,8 @@ class GoogleSheetService {
       return false;
     }
     try {
-      final List<dynamic> rowData = [
+      // Re-verify column order for update: Date, Shift, Roast Type, Bean Name, Morning In, Add On Morning, Add On Afternoon, Evening Out, Morning Stock, Evening Stock, Throw Away, Test, Event, Employee, Notes, Update Time
+      final List<dynamic> alignedRowData = [
         record.date,
         record.shift,
         record.roastType,
@@ -244,19 +252,21 @@ class GoogleSheetService {
         record.addOnMorning,
         record.addOnAfternoon,
         record.eveningOut,
-        record.morningStock,
-        record.eveningStock,
+        record.morningStock, // Correct order for Morning Stock
+        record.eveningStock, // Correct order for Evening Stock
         record.throwAway,
         record.test,
         record.event,
         record.employeeShot,
         record.notes,
+        DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()), // Auto-update time
       ];
+
 
       final String range = '$worksheetName!A$rowIndex:${String.fromCharCode(65 + expectedHeaders.length - 1)}$rowIndex';
 
       await _sheetsApi!.spreadsheets.values.update(
-        sheets.ValueRange(values: [rowData]),
+        sheets.ValueRange(values: [alignedRowData]), // Use alignedRowData
         _spreadsheetId!,
         range,
         valueInputOption: 'RAW',
@@ -323,31 +333,42 @@ Future<List<Record>> getDashboardData(GoogleSheetService sheetService) async {
         ? '${item.roastType}-$normalizedBeanName'
         : item.roastType;
 
-    final currentDate = DateTime.tryParse(item.date) ?? DateTime(1, 1, 1);
+    // Use tryParse to handle potentially invalid date formats gracefully
+    final currentDate = DateTime.tryParse(item.date) ?? DateTime(1900); // Fallback to a very old date
 
     if (!latestStock.containsKey(itemKey)) {
       latestStock[itemKey] = item;
     } else {
       final existingItem = latestStock[itemKey]!;
-      final existingDate = DateTime.tryParse(existingItem.date) ?? DateTime(1, 1, 1);
+      final existingDate = DateTime.tryParse(existingItem.date) ?? DateTime(1900); // Fallback to a very old date
 
       // Prioritize by date (newer date is always preferred)
       if (currentDate.isAfter(existingDate)) {
         latestStock[itemKey] = item;
       } else if (currentDate.isAtSameMomentAs(existingDate)) {
-        // If same date, prioritize Evening over Morning
-        if (item.shift == 'Evening' && existingItem.shift == 'Morning') {
-          latestStock[itemKey] = item;
-        }
-        // If both are Evening, or both Morning for same date, keep the one with more data
-        else if (item.shift == existingItem.shift) {
-          if (item.eveningStock != 0 && existingItem.eveningStock == 0) {
+        // If same date, use updateTime if available, otherwise prioritize Evening over Morning
+        final currentUpdateTime = DateTime.tryParse(item.updateTime ?? '');
+        final existingUpdateTime = DateTime.tryParse(existingItem.updateTime ?? '');
+
+        if (currentUpdateTime != null && existingUpdateTime != null) {
+          if (currentUpdateTime.isAfter(existingUpdateTime)) {
             latestStock[itemKey] = item;
-          } else if (item.morningStock != 0 && existingItem.morningStock == 0 && item.shift == 'Morning') {
+          }
+        } else {
+          // Fallback to shift comparison if updateTime is not available for both or parsing fails
+          if (item.shift == 'Evening' && existingItem.shift == 'Morning') {
             latestStock[itemKey] = item;
-          } else if ((item.roastType == 'Single Origin' || item.roastType == 'Other Inventory')
-              && item.beanName.isNotEmpty && existingItem.beanName.isEmpty) {
-            latestStock[itemKey] = item;
+          }
+          // If both are Evening, or both Morning for same date, keep the one with more data
+          else if (item.shift == existingItem.shift) {
+            if (item.eveningStock != 0 && existingItem.eveningStock == 0) {
+              latestStock[itemKey] = item;
+            } else if (item.morningStock != 0 && existingItem.morningStock == 0 && item.shift == 'Morning') {
+              latestStock[itemKey] = item;
+            } else if ((item.roastType == 'Single Origin' || item.roastType == 'Other Inventory')
+                && item.beanName.isNotEmpty && existingItem.beanName.isEmpty) {
+              latestStock[itemKey] = item;
+            }
           }
         }
       }
@@ -394,8 +415,9 @@ Future<List<Map<String, dynamic>>> getHistoryData(GoogleSheetService sheetServic
   final allRecordsWithIndex = await sheetService.getAllRecordsWithIndex();
 
   allRecordsWithIndex.sort((a, b) {
-    final dateA = DateTime.tryParse(a['Date']?.toString() ?? '') ?? DateTime(1, 1, 1);
-    final dateB = DateTime.tryParse(b['Date']?.toString() ?? '') ?? DateTime(1, 1, 1);
+    // Use tryParse with a fallback to handle potentially invalid date formats
+    final dateA = DateTime.tryParse(a['Date']?.toString() ?? '') ?? DateTime(1900);
+    final dateB = DateTime.tryParse(b['Date']?.toString() ?? '') ?? DateTime(1900);
 
     int dateCompare = dateB.compareTo(dateA); // Sort by date descending (newest first)
     if (dateCompare != 0) return dateCompare;
@@ -403,7 +425,21 @@ Future<List<Map<String, dynamic>>> getHistoryData(GoogleSheetService sheetServic
     // For same date, Morning (0) comes before Evening (1)
     int shiftA = (a['Shift']?.toString() == 'Morning') ? 0 : 1;
     int shiftB = (b['Shift']?.toString() == 'Morning') ? 0 : 1;
-    return shiftA.compareTo(shiftB);
+    int shiftCompare = shiftA.compareTo(shiftB);
+    if (shiftCompare != 0) return shiftCompare;
+
+    // For same date and shift, use Update Time (newest first)
+    final updateTimeA = DateTime.tryParse(a['Update Time']?.toString() ?? '');
+    final updateTimeB = DateTime.tryParse(b['Update Time']?.toString() ?? '');
+
+    if (updateTimeA != null && updateTimeB != null) {
+      return updateTimeB.compareTo(updateTimeA); // Newest update time first
+    } else if (updateTimeA != null) {
+      return -1; // A has update time, B doesn't, A comes first
+    } else if (updateTimeB != null) {
+      return 1; // B has update time, A doesn't, B comes first
+    }
+    return 0; // No update time for either, maintain original relative order
   });
 
   return allRecordsWithIndex;
@@ -435,15 +471,13 @@ Map<String, dynamic> validateAndPrepareRecord({
   if (roastType.isEmpty) validationErrors.add("Roast Type");
 
   final bool isSingleOrigin = roastType == 'Single Origin';
-  final bool isOtherInventory = roastType == 'Other Inventory'; // NEW check
+  final bool isOtherInventory = roastType == 'Other Inventory';
   final bool isMorningShift = shift == 'Morning';
 
-  // Validate item name if SO or Other Inventory
   if (isSingleOrigin || isOtherInventory) {
     if (beanName.isEmpty) validationErrors.add(isOtherInventory ? "Item Name" : "Bean Name");
   }
 
-  // Validate shot counts only if not Other Inventory
   if (!isOtherInventory) {
     int? employeeShotVal = int.tryParse(employeeShotStr);
     if (employeeShotVal == null) {
@@ -461,14 +495,13 @@ Map<String, dynamic> validateAndPrepareRecord({
   }
 
 
-  // Validate stock/grinder fields based on roast type and shift
-  if (isSingleOrigin || isOtherInventory) { // Unified validation for SO and Other Inventory
+  if (isSingleOrigin || isOtherInventory) {
     if (isMorningShift && soInStr.isEmpty) {
       validationErrors.add("${isOtherInventory ? 'Inventory' : 'Single Origin'} Total Stock (IN)");
     } else if (!isMorningShift && soOutStr.isEmpty) {
       validationErrors.add("${isOtherInventory ? 'Inventory' : 'Single Origin'} Total Stock (OUT)");
     }
-  } else { // Light/Medium Roasts
+  } else {
     if (isMorningShift) {
       if (morningInStr.isEmpty) validationErrors.add("Morning In (g) - Grinder");
       if (lmMorningStockStr.isEmpty) validationErrors.add("Light/Medium Overall Stock (IN)");
@@ -494,21 +527,19 @@ Map<String, dynamic> validateAndPrepareRecord({
     double morningStockToSheet = 0.0;
     double eveningStockToSheet = 0.0;
 
-    // Shot counts are 0 if roastType is Other Inventory, otherwise parsed
     int throwAwayVal = isOtherInventory ? 0 : (int.tryParse(throwAwayStr) ?? 0);
     int testVal = isOtherInventory ? 0 : (int.tryParse(testStr) ?? 0);
     int eventVal = isOtherInventory ? 0 : (int.tryParse(eventStr) ?? 0);
     int employeeShotVal = isOtherInventory ? 0 : (int.tryParse(employeeShotStr) ?? 0);
 
-    if (isSingleOrigin || isOtherInventory) { // Unified data assignment for SO and Other Inventory
+    if (isSingleOrigin || isOtherInventory) {
       morningStockToSheet = double.tryParse(soInStr) ?? 0.0;
       eveningStockToSheet = double.tryParse(soOutStr) ?? 0.0;
-      // Explicitly clear/set coffee-specific grinder fields to 0 for SO/inventory
       morningInVal = 0.0;
       addOnMorningVal = 0.0;
       addOnAfternoonVal = 0.0;
       eveningOutVal = 0.0;
-    } else { // Light/Medium Roasts
+    } else {
       if (isMorningShift) {
         morningInVal = double.tryParse(morningInStr) ?? 0.0;
         addOnMorningVal = double.tryParse(addOnMorningStr) ?? 0.0;
@@ -524,7 +555,7 @@ Map<String, dynamic> validateAndPrepareRecord({
       date: date,
       shift: shift,
       roastType: roastType,
-      beanName: (isSingleOrigin || isOtherInventory) ? beanName : '', // 'Bean Name' is used for item name for Inventory
+      beanName: (isSingleOrigin || isOtherInventory) ? beanName : '',
       morningIn: morningInVal,
       addOnMorning: addOnMorningVal,
       addOnAfternoon: addOnAfternoonVal,
@@ -610,14 +641,64 @@ class _MainScreenState extends State<MainScreen> {
   int? _editingRecordIndex;
 
   Set<String> _beanNameSuggestions = {};
-  Set<String> _inventoryNameSuggestions = {}; // already present
+  Set<String> _inventoryNameSuggestions = {};
 
-  // This function is now responsible for setting the edit state and navigating
+  // --- MainScreenState (modified _editEntry for clarity) ---
   void _editEntry(Record record, int rowIndex) {
+    final DateTime now = DateTime.now();
+    final String currentDate = DateFormat('yyyy-MM-dd').format(now);
+    final String currentShift = (now.hour < 12) ? 'Morning' : 'Evening'; // Determine current shift for new entry template
+
+    // Determine if the last update was within the last hour
+    bool shouldEditExistingFullRecord = false;
+    if (record.updateTime != null) {
+      final DateTime? lastUpdateTime = DateTime.tryParse(record.updateTime!);
+      if (lastUpdateTime != null) {
+        final Duration difference = now.difference(lastUpdateTime);
+        if (difference.inHours < 1) { // Check if difference is less than 1 hour
+          shouldEditExistingFullRecord = true;
+        }
+      }
+    }
+
+    Record recordToPass;
+    int? rowIndexToPass;
+
+    if (shouldEditExistingFullRecord) {
+      // If within 1 hour, truly edit the existing record.
+      // Pass the original 'record' as is, including its date, shift, and rowIndex.
+      recordToPass = record;
+      rowIndexToPass = rowIndex;
+    } else {
+      // If not within 1 hour, treat it as a new entry template.
+      // Create a new Record object with current date/shift, but copy roastType/beanName.
+      recordToPass = Record(
+        date: currentDate, // Set to current date
+        shift: currentShift, // Set to current shift based on time
+        roastType: record.roastType,
+        beanName: record.beanName,
+        // Reset other fields for a new entry template
+        morningIn: 0.0,
+        addOnMorning: 0.0,
+        addOnAfternoon: 0.0,
+        eveningOut: 0.0,
+        morningStock: 0.0,
+        eveningStock: 0.0,
+        throwAway: 0,
+        test: 0,
+        event: 0,
+        employeeShot: 0,
+        notes: '',
+        updateTime: null, // Clear update time for new entry
+        rowIndex: null, // Important: Nullify rowIndex to ensure it's treated as a new entry
+      );
+      rowIndexToPass = null;
+    }
+
     setState(() {
-      _currentEditRecord = record;
-      _editingRecordIndex = rowIndex;
-      _selectedIndex = 1; // Navigate to the "Daily Entry" tab
+      _currentEditRecord = recordToPass;
+      _editingRecordIndex = rowIndexToPass; // This will be null for new entry templates
+      _selectedIndex = 1; // Navigate to the Daily Entry form
     });
   }
 
@@ -632,7 +713,6 @@ class _MainScreenState extends State<MainScreen> {
     final dashData = await getDashboardData(_sheetService);
     final histData = await getHistoryData(_sheetService);
 
-    // Use Set to ensure unique names only (no duplicates)
     final Set<String> newBeanSuggestions = {};
     final Set<String> newInventorySuggestions = {};
 
@@ -735,29 +815,26 @@ class _MainScreenState extends State<MainScreen> {
 
     final Record recordToSubmit = validationResult['record'];
     bool success = false;
+    String actionMessage = "";
 
-    if (_editingRecordIndex != null) {
+    // Check if it's an update scenario based on _currentEditRecord and its rowIndex
+    if (_currentEditRecord != null && _editingRecordIndex != null) { // Use _editingRecordIndex for the check
       success = await _sheetService.updateExistingRecord(recordToSubmit, _editingRecordIndex!);
-      if (success) {
-        _showSnackbar("Stock entry updated successfully!", isSuccess: true);
-      } else {
-        _showSnackbar("Failed to update stock entry in Google Sheet.", isSuccess: false);
-      }
+      actionMessage = "Stock entry updated successfully!";
     } else {
       success = await _sheetService.appendRecord(recordToSubmit);
-      if (success) {
-        _showSnackbar("Stock entry added successfully!", isSuccess: true);
-      } else {
-        _showSnackbar("Failed to add stock entry to Google Sheet.", isSuccess: false);
-      }
+      actionMessage = "Stock entry added successfully!";
     }
 
     if (success) {
+      _showSnackbar(actionMessage, isSuccess: true);
       _clearEditState();
       await _refreshAllData();
       setState(() {
         _selectedIndex = 0;
       });
+    } else {
+      _showSnackbar("Failed to process stock entry in Google Sheet.", isSuccess: false);
     }
   }
 
@@ -777,9 +854,7 @@ class _MainScreenState extends State<MainScreen> {
           DashboardContent(
             dashboardData: _dashboardData,
             refreshDashboardData: _refreshAllData,
-            // Pass the entire _historyData and the editEntry callback
-            allHistoryData: _historyData,
-            onTapDashboardItem: _editEntry,
+            onTapDashboardItem: _editEntry, // Now directly passes Record with rowIndex
           ),
           DailyEntryContent(
             submitEntry: _handleEntrySubmission,
@@ -792,7 +867,7 @@ class _MainScreenState extends State<MainScreen> {
               });
             },
             beanNameSuggestions: _beanNameSuggestions.toList(),
-            inventoryNameSuggestions: _inventoryNameSuggestions.toList(), // pass inventory suggestions
+            inventoryNameSuggestions: _inventoryNameSuggestions.toList(),
           ),
           HistoryContent(
             historyData: _historyData,
@@ -844,15 +919,14 @@ class _MainScreenState extends State<MainScreen> {
 class DashboardContent extends StatefulWidget {
   final List<Record> dashboardData;
   final Future<void> Function() refreshDashboardData;
-  final List<Map<String, dynamic>> allHistoryData; // Add this to access full history with row index
-  final void Function(Record record, int rowIndex) onTapDashboardItem; // New callback for tapping
+  // Removed allHistoryData as it's no longer needed for finding rowIndex
+  final void Function(Record record, int rowIndex) onTapDashboardItem;
 
   const DashboardContent({
     super.key,
     required this.dashboardData,
     required this.refreshDashboardData,
-    required this.allHistoryData, // Initialize
-    required this.onTapDashboardItem, // Initialize
+    required this.onTapDashboardItem,
   });
 
   @override
@@ -897,32 +971,25 @@ class _DashboardContentState extends State<DashboardContent> {
             Color amountColorGrinder = Colors.green[600]!;
             Color amountColorMain = Colors.blueGrey[900]!;
 
-            // Overall stock
             double overallStockAmount = item.eveningStock;
             if (overallStockAmount == 0) {
-              // If evening stock is 0, use morning stock
               overallStockAmount = item.morningStock;
             }
             mainStockAmountDisplay = formatQuantityDisplay(overallStockAmount, unit: 'g', roastType: item.roastType);
 
-            // Overall stock color based on quantity and type
             final double? parsedMainStockAmount = double.tryParse(mainStockAmountDisplay.replaceAll('g', '').replaceAll('N/A', '0'));
             if (parsedMainStockAmount != null && parsedMainStockAmount > 0) {
               if (parsedMainStockAmount <= 1000 && item.roastType != 'Other Inventory') {
-                // Low coffee stock
                 amountColorMain = Colors.orange[700]!;
               }
               if (parsedMainStockAmount <= 500 && item.roastType != 'Other Inventory') {
-                // Very low coffee stock
                 amountColorMain = Colors.red[500]!;
               }
             } else if (parsedMainStockAmount == 0) {
-              amountColorMain = Colors.grey; // Grey for N/A or 0
+              amountColorMain = Colors.grey;
             }
 
-            // Grinder/In-use calculation (Feature 1)
             if (item.roastType != 'Single Origin' && item.roastType != 'Other Inventory') {
-              // Only for Light/Medium Roasts
               double grinderCalculation = 0.0;
               if (item.shift == 'Morning') {
                 grinderCalculation = item.morningIn + item.addOnMorning;
@@ -937,32 +1004,24 @@ class _DashboardContentState extends State<DashboardContent> {
                 amountColorGrinder = Colors.grey;
               }
             } else {
-              grinderAmountDisplay = "N/A"; // Not applicable for SO or Other Inventory
+              grinderAmountDisplay = "N/A";
             }
 
-            // Find the corresponding record in historyData to get the rowIndex
-            // This is a heuristic, assuming the dashboard item corresponds to the *latest* entry
-            // for that roast type/bean name. A more robust solution might involve storing
-            // the rowIndex directly in the Record model if fetched from Sheets.
-            final Map<String, dynamic>? recordInHistory = widget.allHistoryData.firstWhere(
-              (historyItem) {
-                final historyRecord = Record.fromMap(historyItem);
-                return historyRecord.date == item.date && historyRecord.shift == item.shift && historyRecord.roastType == item.roastType && historyRecord.beanName == item.beanName;
-              },
-              orElse: () => {}, // Return an empty map if not found
-            );
-            final int? rowIndexForEdit = recordInHistory?['__rowIndex'] as int?;
+            // Directly use item.rowIndex
+            final int? rowIndexForEdit = item.rowIndex;
 
             return Card(
               margin: const EdgeInsets.only(bottom: 10),
               child: InkWell(
-                // Use InkWell for tap feedback
                 onTap: () {
                   if (rowIndexForEdit != null) {
                     widget.onTapDashboardItem(item, rowIndexForEdit);
                   } else {
-                    // Optionally show a snackbar or log if the record can't be found for editing
-                    debugPrint("Could not find row index for dashboard item: ${item.roastType} - ${item.beanName}");
+                    debugPrint("Error: Record missing rowIndex for dashboard item: ${item.roastType} - ${item.beanName}");
+                    // Optionally, show a snackbar to the user
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Could not edit this item. Row index missing.'), backgroundColor: Colors.red),
+                    );
                   }
                 },
                 child: Padding(
@@ -990,7 +1049,7 @@ class _DashboardContentState extends State<DashboardContent> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  "Overall: $mainStockAmountDisplay",
+                                  "Overall: ${mainStockAmountDisplay}",
                                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                                         fontWeight: FontWeight.bold,
                                         color: amountColorMain,
@@ -1006,7 +1065,7 @@ class _DashboardContentState extends State<DashboardContent> {
                                 crossAxisAlignment: CrossAxisAlignment.end,
                                 children: [
                                   Text(
-                                    "Grinder: $grinderAmountDisplay",
+                                    "Grinder: ${grinderAmountDisplay}",
                                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                                           fontWeight: FontWeight.bold,
                                           color: amountColorGrinder,
@@ -1064,7 +1123,7 @@ class DailyEntryContent extends StatefulWidget {
   final VoidCallback clearEditState;
   final VoidCallback goToDashboard;
   final List<String> beanNameSuggestions;
-  final List<String> inventoryNameSuggestions; // add this
+  final List<String> inventoryNameSuggestions;
 
   const DailyEntryContent({
     super.key,
@@ -1073,7 +1132,7 @@ class DailyEntryContent extends StatefulWidget {
     required this.clearEditState,
     required this.goToDashboard,
     required this.beanNameSuggestions,
-    required this.inventoryNameSuggestions, // add this
+    required this.inventoryNameSuggestions,
   });
 
   @override
@@ -1089,7 +1148,6 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
   final TextEditingController _eveningOutController = TextEditingController();
   final TextEditingController _lmMorningStockController = TextEditingController();
   final TextEditingController _lmEveningStockController = TextEditingController();
-  // Renamed for clarity to be used by both Single Origin and Other Inventory
   final TextEditingController _soInventoryInController = TextEditingController();
   final TextEditingController _soInventoryOutController = TextEditingController();
   final TextEditingController _throwAwayController = TextEditingController(text: '0');
@@ -1099,7 +1157,7 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
   final TextEditingController _notesController = TextEditingController();
 
   String _selectedShift = 'Morning';
-  String? _selectedRoastType = 'Light Roast'; // Initialize here or in initState
+  String? _selectedRoastType = 'Light Roast';
   bool _isSingleOrigin = false;
   bool _isOtherInventory = false;
   bool _isMorningShift = true;
@@ -1118,28 +1176,57 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
     }
   }
 
+  // --- DailyEntryContentState (corrected _initializeForm) ---
   void _initializeForm() {
     if (widget.currentEditRecord != null) {
-      _dateController.text = widget.currentEditRecord!.date;
-      _selectedShift = widget.currentEditRecord!.shift;
+      // This condition checks if we're dealing with an edit or a templated new entry.
+      // If widget.currentEditRecord!.rowIndex is NOT null, it means we're truly editing an existing record.
+      if (widget.currentEditRecord!.rowIndex != null) {
+        // This is a true "edit existing record" scenario (e.g., from History or a recent dashboard item)
+        _dateController.text = widget.currentEditRecord!.date;
+        _selectedShift = widget.currentEditRecord!.shift;
+      } else {
+        // This is the "template" scenario from the dashboard (where rowIndex was nulled out in _editEntry)
+        // Use the pre-set date and shift from the templated record (current date, current/evening shift)
+        _dateController.text = widget.currentEditRecord!.date;
+        _selectedShift = widget.currentEditRecord!.shift;
+      }
+
+      // Populate common fields regardless of edit or new template
       _selectedRoastType = widget.currentEditRecord!.roastType;
       _beanNameController.text = widget.currentEditRecord!.beanName;
       _morningInController.text = widget.currentEditRecord!.morningIn == 0.0 ? '' : widget.currentEditRecord!.morningIn.toString();
       _addOnMorningController.text = widget.currentEditRecord!.addOnMorning == 0.0 ? '' : widget.currentEditRecord!.addOnMorning.toString();
       _addOnAfternoonController.text = widget.currentEditRecord!.addOnAfternoon == 0.0 ? '' : widget.currentEditRecord!.addOnAfternoon.toString();
       _eveningOutController.text = widget.currentEditRecord!.eveningOut == 0.0 ? '' : widget.currentEditRecord!.eveningOut.toString();
-      _lmMorningStockController.text = widget.currentEditRecord!.morningStock == 0.0 ? '' : widget.currentEditRecord!.morningStock.toString();
-      _lmEveningStockController.text = widget.currentEditRecord!.eveningStock == 0.0 ? '' : widget.currentEditRecord!.eveningStock.toString();
-      // Assign to unified controllers for SO and Other Inventory
-      _soInventoryInController.text = widget.currentEditRecord!.morningStock == 0.0 ? '' : widget.currentEditRecord!.morningStock.toString();
-      _soInventoryOutController.text = widget.currentEditRecord!.eveningStock == 0.0 ? '' : widget.currentEditRecord!.eveningStock.toString();
+
+      // Conditional stock field population based on Roast Type and Shift
+      if (widget.currentEditRecord!.roastType == 'Single Origin' || widget.currentEditRecord!.roastType == 'Other Inventory') {
+        _soInventoryInController.text = widget.currentEditRecord!.morningStock == 0.0 ? '' : widget.currentEditRecord!.morningStock.toString();
+        _soInventoryOutController.text = widget.currentEditRecord!.eveningStock == 0.0 ? '' : widget.currentEditRecord!.eveningStock.toString();
+        _lmMorningStockController.clear();
+        _lmEveningStockController.clear();
+      } else {
+        _lmMorningStockController.text = widget.currentEditRecord!.morningStock == 0.0 ? '' : widget.currentEditRecord!.morningStock.toString();
+        _lmEveningStockController.text = widget.currentEditRecord!.eveningStock == 0.0 ? '' : widget.currentEditRecord!.eveningStock.toString();
+        _soInventoryInController.clear();
+        _soInventoryOutController.clear();
+      }
+
       _throwAwayController.text = widget.currentEditRecord!.throwAway.toString();
       _testController.text = widget.currentEditRecord!.test.toString();
       _eventController.text = widget.currentEditRecord!.event.toString();
       _employeeShotController.text = widget.currentEditRecord!.employeeShot.toString();
       _notesController.text = widget.currentEditRecord!.notes;
+
     } else {
+      // This is for a completely new, blank entry (e.g., directly clicking 'Add Entry' tab)
       _dateController.text = DateFormat('yyyy-MM-dd').format(DateTime.now());
+      final currentHour = DateTime.now().hour;
+      _selectedShift = (currentHour < 12) ? 'Morning' : 'Evening';
+      _selectedRoastType = 'Light Roast'; // Default for a new entry
+
+      // Clear all fields for a fresh start
       _beanNameController.clear();
       _morningInController.clear();
       _addOnMorningController.clear();
@@ -1154,8 +1241,6 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
       _eventController.text = '0';
       _employeeShotController.text = '0';
       _notesController.clear();
-      _selectedShift = 'Morning';
-      _selectedRoastType = 'Light Roast';
     }
     _updateDependentFields();
   }
@@ -1166,7 +1251,6 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
       _isOtherInventory = _selectedRoastType == 'Other Inventory';
       _isMorningShift = _selectedShift == 'Morning';
 
-      // Clear fields that are not relevant to the current selection
       if (_isSingleOrigin || _isOtherInventory) {
         _morningInController.clear();
         _addOnMorningController.clear();
@@ -1174,7 +1258,6 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
         _eveningOutController.clear();
         _lmMorningStockController.clear();
         _lmEveningStockController.clear();
-        // Shot counts are only cleared if roastType is Other Inventory
         if (_isOtherInventory) {
           _throwAwayController.text = '0';
           _testController.text = '0';
@@ -1190,12 +1273,12 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
         _addOnAfternoonController.clear();
         _eveningOutController.clear();
         _lmEveningStockController.clear();
-        _soInventoryOutController.clear(); // Clear 'out' for SO/Inventory if Morning
+        _soInventoryOutController.clear();
       } else {
         _morningInController.clear();
         _addOnMorningController.clear();
         _lmMorningStockController.clear();
-        _soInventoryInController.clear(); // Clear 'in' for SO/Inventory if Evening
+        _soInventoryInController.clear();
       }
     });
   }
@@ -1257,7 +1340,6 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
               controller.text = selection;
             },
             fieldViewBuilder: (BuildContext context, TextEditingController fieldTextEditingController, FocusNode fieldFocusNode, void Function() onFieldSubmitted) {
-              // Ensure the internal controller is kept in sync
               if (fieldTextEditingController.text != controller.text) {
                 fieldTextEditingController.text = controller.text;
               }
@@ -1271,7 +1353,7 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
                 keyboardType: keyboardType,
                 enabled: enabled,
                 onChanged: (value) {
-                  controller.text = value; // Update the external controller on change
+                  controller.text = value;
                 },
               );
             },
@@ -1312,6 +1394,14 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
               readOnly: true,
               onTap: () => _selectDate(context),
             ),
+            if (widget.currentEditRecord != null && widget.currentEditRecord!.updateTime != null && widget.currentEditRecord!.rowIndex != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8.0, bottom: 8.0),
+                child: Text(
+                  'Last Updated: ${widget.currentEditRecord!.updateTime}',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic, color: Colors.grey[600]),
+                ),
+              ),
             const SizedBox(height: 16.0),
             DropdownButtonFormField<String>(
               value: _selectedShift,
@@ -1385,7 +1475,6 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
                   keyboardType: TextInputType.number,
                 ),
             ],
-            // Unified stock fields for Light/Medium (lm) vs Single Origin/Other Inventory (soInventory)
             if (_isMorningShift)
               _buildTextField(
                 controller: (_isSingleOrigin || _isOtherInventory) ? _soInventoryInController : _lmMorningStockController,
@@ -1449,9 +1538,9 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
                   notes: _notesController.text,
                 );
               },
-              child: Text(widget.currentEditRecord == null ? 'Add Stock Entry' : 'Update Stock Entry'),
+              child: Text(widget.currentEditRecord == null || widget.currentEditRecord!.rowIndex == null ? 'Add Stock Entry' : 'Submit Stock Entry'),
             ),
-            if (widget.currentEditRecord != null)
+            if (widget.currentEditRecord != null && widget.currentEditRecord!.rowIndex != null) // Only show clear button if truly in edit mode
               Padding(
                 padding: const EdgeInsets.only(top: 16.0),
                 child: OutlinedButton(
@@ -1515,24 +1604,19 @@ class HistoryContent extends StatefulWidget {
 }
 
 class _HistoryContentState extends State<HistoryContent> {
-  // Add a TextEditingController for search input
   final TextEditingController _searchController = TextEditingController();
-  // State variable to hold filtered history data
   List<Map<String, dynamic>> _filteredHistoryData = [];
 
   @override
   void initState() {
     super.initState();
-    // Initialize filtered data with all history data
     _filteredHistoryData = widget.historyData;
-    // Add listener to search controller for real-time filtering
     _searchController.addListener(_filterHistory);
   }
 
   @override
   void didUpdateWidget(covariant HistoryContent oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Update filtered data when historyData changes
     if (widget.historyData != oldWidget.historyData) {
       _filterHistory();
     }
@@ -1602,11 +1686,11 @@ class _HistoryContentState extends State<HistoryContent> {
                 child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: ConstrainedBox(
-                    constraints: BoxConstraints(minWidth: MediaQuery.of(context).size.width - 40), // Ensure table takes full width
+                    constraints: BoxConstraints(minWidth: MediaQuery.of(context).size.width - 40),
                     child: DataTable(
-                      columnSpacing: 12.0, // Reduced column spacing
-                      dataRowMinHeight: 40.0, // Min height for rows
-                      dataRowMaxHeight: 60.0, // Max height for rows
+                      columnSpacing: 12.0,
+                      dataRowMinHeight: 40.0,
+                      dataRowMaxHeight: 60.0,
                       headingRowColor: MaterialStateProperty.resolveWith((states) => Colors.blue.withOpacity(0.1)),
                       columns: const <DataColumn>[
                         DataColumn(label: Text('Date', style: TextStyle(fontWeight: FontWeight.bold))),
@@ -1622,11 +1706,12 @@ class _HistoryContentState extends State<HistoryContent> {
                         DataColumn(label: Text('Event', style: TextStyle(fontWeight: FontWeight.bold))),
                         DataColumn(label: Text('Emp', style: TextStyle(fontWeight: FontWeight.bold))),
                         DataColumn(label: Text('Notes', style: TextStyle(fontWeight: FontWeight.bold))),
+                        DataColumn(label: Text('Update Time', style: TextStyle(fontWeight: FontWeight.bold))),
                         DataColumn(label: Text('Edit', style: TextStyle(fontWeight: FontWeight.bold))),
                       ],
                       rows: _filteredHistoryData.map((itemMap) {
                         final item = Record.fromMap(itemMap);
-                        final rowIndex = itemMap['__rowIndex'] as int; // Get the original row index
+                        final rowIndex = itemMap['__rowIndex'] as int;
 
                         String coffeeItemName;
                         if (item.roastType == 'Single Origin' || item.roastType == 'Other Inventory') {
@@ -1635,7 +1720,6 @@ class _HistoryContentState extends State<HistoryContent> {
                           coffeeItemName = item.roastType;
                         }
 
-                        // Display logic for Morning In, Add On Morning/Afternoon, Evening Out
                         String morningInDisplay = 'N/A';
                         String addOnMorningDisplay = 'N/A';
                         String addOnAfternoonDisplay = 'N/A';
@@ -1648,7 +1732,6 @@ class _HistoryContentState extends State<HistoryContent> {
                           eveningOutDisplay = formatQuantityDisplay(item.eveningOut);
                         }
 
-                        // Display logic for main stock based on shift and roast type
                         String mainStockVal;
                         if (item.roastType == 'Single Origin' || item.roastType == 'Other Inventory') {
                           mainStockVal = formatQuantityDisplay(item.shift == 'Morning' ? item.morningStock : item.eveningStock, unit: 'g', roastType: item.roastType);
@@ -1656,7 +1739,6 @@ class _HistoryContentState extends State<HistoryContent> {
                           mainStockVal = formatQuantityDisplay(item.shift == 'Morning' ? item.morningStock : item.eveningStock, unit: 'g', roastType: item.roastType);
                         }
 
-                        // Display logic for shot counts
                         String throwAwayDisplay = formatQuantityDisplay(item.throwAway, unit: 'shot');
                         String testDisplay = formatQuantityDisplay(item.test, unit: 'shot');
                         String eventDisplay = formatQuantityDisplay(item.event, unit: 'shot');
@@ -1677,6 +1759,7 @@ class _HistoryContentState extends State<HistoryContent> {
                             DataCell(Text(eventDisplay)),
                             DataCell(Text(employeeShotDisplay)),
                             DataCell(Text(item.notes.isNotEmpty ? item.notes : 'N/A')),
+                            DataCell(Text(item.updateTime ?? 'N/A')),
                             DataCell(
                               IconButton(
                                 icon: const Icon(Icons.edit),
