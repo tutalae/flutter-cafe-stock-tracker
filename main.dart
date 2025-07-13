@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle; // Import rootBundle
 import 'package:intl/intl.dart';
 import 'package:googleapis/sheets/v4.dart' as sheets;
 import 'package:googleapis_auth/auth_io.dart' as auth;
@@ -76,19 +77,18 @@ class GoogleSheetService {
   sheets.SheetsApi? _sheetsApi;
   String? _spreadsheetId;
 
-  final String _serviceAccountJson = r'''
-  {
-  ---------------------------------------------
-  }
-  ''';
+  // Remove the hardcoded empty JSON string
+  // final String _serviceAccountJson = r''' {} ''';
 
   final String googleSheetName = 'Daily Checklist';
-  final String worksheetName = 'Sheet5';
+  final String worksheetName = 'Copy of Coffee Stock Tracker Table';
 
   Future<bool> initializeSheet() async {
     try {
-      final jsonCredentials = _serviceAccountJson;
-      final accountCredentials = auth.ServiceAccountCredentials.fromJson(jsonCredentials);
+      // Load service account key from assets
+      final String jsonCredentialsString = await rootBundle.loadString('assets/service_account_key.json');
+      final accountCredentials = auth.ServiceAccountCredentials.fromJson(jsonCredentialsString);
+
       final client = await auth.clientViaServiceAccount(
         accountCredentials,
         [sheets.SheetsApi.spreadsheetsScope],
@@ -271,6 +271,8 @@ class GoogleSheetService {
     }
   }
 }
+
+// ... (rest of your main.dart file remains the same)
 
 // --- Utility Functions ---
 
@@ -861,155 +863,153 @@ class _DashboardContentState extends State<DashboardContent> {
                 style: TextStyle(color: Colors.grey[600]),
               ),
             )
-          else
-            ...widget.dashboardData.map((item) {
-              String coffeeName;
-              if (item.roastType == 'Single Origin' || item.roastType == 'Other Inventory') {
-                coffeeName = "${item.roastType}: ${item.beanName}";
-              } else {
-                coffeeName = item.roastType;
+          else ...widget.dashboardData.map((item) {
+            String coffeeName;
+            if (item.roastType == 'Single Origin' || item.roastType == 'Other Inventory') {
+              coffeeName = "${item.roastType}: ${item.beanName}";
+            } else {
+              coffeeName = item.roastType;
+            }
+            String mainStockAmountDisplay = 'N/A';
+            String grinderAmountDisplay = 'N/A';
+            Color amountColorGrinder = Colors.green[600]!;
+            Color amountColorMain = Colors.blueGrey[900]!;
+
+            // Overall stock
+            double overallStockAmount = item.eveningStock;
+            if (overallStockAmount == 0) {
+              // If evening stock is 0, use morning stock
+              overallStockAmount = item.morningStock;
+            }
+            mainStockAmountDisplay = formatQuantityDisplay(overallStockAmount, unit: 'g', roastType: item.roastType);
+
+            // Overall stock color based on quantity and type
+            final double? parsedMainStockAmount = double.tryParse(mainStockAmountDisplay.replaceAll('g', '').replaceAll('N/A', '0'));
+            if (parsedMainStockAmount != null && parsedMainStockAmount > 0) {
+              if (parsedMainStockAmount <= 1000 && item.roastType != 'Other Inventory') {
+                // Low coffee stock
+                amountColorMain = Colors.orange[700]!;
               }
-
-              String mainStockAmountDisplay = 'N/A';
-              String grinderAmountDisplay = 'N/A';
-              Color amountColorGrinder = Colors.green[600]!;
-              Color amountColorMain = Colors.blueGrey[900]!;
-
-              // Overall stock
-              double overallStockAmount = item.eveningStock;
-              if (overallStockAmount == 0) { // If evening stock is 0, use morning stock
-                 overallStockAmount = item.morningStock;
+              if (parsedMainStockAmount <= 500 && item.roastType != 'Other Inventory') {
+                // Very low coffee stock
+                amountColorMain = Colors.red[500]!;
               }
-              mainStockAmountDisplay = formatQuantityDisplay(overallStockAmount, unit: 'g', roastType: item.roastType);
+            } else if (parsedMainStockAmount == 0) {
+              amountColorMain = Colors.grey; // Grey for N/A or 0
+            }
 
-              // Overall stock color based on quantity and type
-              final double? parsedMainStockAmount = double.tryParse(mainStockAmountDisplay.replaceAll('g', '').replaceAll('N/A', '0'));
-              if (parsedMainStockAmount != null && parsedMainStockAmount > 0) {
-                if (parsedMainStockAmount <= 1000 && item.roastType != 'Other Inventory') { // Low coffee stock
-                  amountColorMain = Colors.orange[700]!;
-                }
-                if (parsedMainStockAmount <= 500 && item.roastType != 'Other Inventory') { // Very low coffee stock
-                  amountColorMain = Colors.red[500]!;
-                }
-              } else if (parsedMainStockAmount == 0) {
-                 amountColorMain = Colors.grey; // Grey for N/A or 0
+            // Grinder/In-use calculation (Feature 1)
+            if (item.roastType != 'Single Origin' && item.roastType != 'Other Inventory') {
+              // Only for Light/Medium Roasts
+              double grinderCalculation = 0.0;
+              if (item.shift == 'Morning') {
+                grinderCalculation = item.morningIn + item.addOnMorning;
+              } else if (item.shift == 'Evening') {
+                grinderCalculation = item.eveningOut + item.addOnAfternoon;
               }
-
-              // Grinder/In-use calculation (Feature 1)
-              if (item.roastType != 'Single Origin' && item.roastType != 'Other Inventory') { // Only for Light/Medium Roasts
-                double grinderCalculation = 0.0;
-                if (item.shift == 'Morning') {
-                  grinderCalculation = item.morningIn + item.addOnMorning;
-                } else if (item.shift == 'Evening') {
-                  grinderCalculation = item.eveningOut + item.addOnAfternoon;
-                }
-                grinderAmountDisplay = formatQuantityDisplay(grinderCalculation, unit: 'g', roastType: item.roastType);
-
-                final double? parsedGrinderAmount = double.tryParse(grinderAmountDisplay.replaceAll('g', '').replaceAll('N/A', '0'));
-                if (parsedGrinderAmount != null && parsedGrinderAmount <= 100 && parsedGrinderAmount > 0) {
-                  amountColorGrinder = Colors.red[500]!;
-                } else if (parsedGrinderAmount == 0) {
-                  amountColorGrinder = Colors.grey;
-                }
-              } else {
-                grinderAmountDisplay = "N/A"; // Not applicable for SO or Other Inventory
+              grinderAmountDisplay = formatQuantityDisplay(grinderCalculation, unit: 'g', roastType: item.roastType);
+              final double? parsedGrinderAmount = double.tryParse(grinderAmountDisplay.replaceAll('g', '').replaceAll('N/A', '0'));
+              if (parsedGrinderAmount != null && parsedGrinderAmount <= 100 && parsedGrinderAmount > 0) {
+                amountColorGrinder = Colors.red[500]!;
+              } else if (parsedGrinderAmount == 0) {
+                amountColorGrinder = Colors.grey;
               }
+            } else {
+              grinderAmountDisplay = "N/A"; // Not applicable for SO or Other Inventory
+            }
 
-              // Find the corresponding record in historyData to get the rowIndex
-              // This is a heuristic, assuming the dashboard item corresponds to the *latest* entry
-              // for that roast type/bean name. A more robust solution might involve storing
-              // the rowIndex directly in the Record model if fetched from Sheets.
-              final Map<String, dynamic>? recordInHistory = widget.allHistoryData.firstWhere(
-                (historyItem) {
-                  final historyRecord = Record.fromMap(historyItem);
-                  return historyRecord.date == item.date &&
-                         historyRecord.shift == item.shift &&
-                         historyRecord.roastType == item.roastType &&
-                         historyRecord.beanName == item.beanName;
+            // Find the corresponding record in historyData to get the rowIndex
+            // This is a heuristic, assuming the dashboard item corresponds to the *latest* entry
+            // for that roast type/bean name. A more robust solution might involve storing
+            // the rowIndex directly in the Record model if fetched from Sheets.
+            final Map<String, dynamic>? recordInHistory = widget.allHistoryData.firstWhere(
+              (historyItem) {
+                final historyRecord = Record.fromMap(historyItem);
+                return historyRecord.date == item.date && historyRecord.shift == item.shift && historyRecord.roastType == item.roastType && historyRecord.beanName == item.beanName;
+              },
+              orElse: () => {}, // Return an empty map if not found
+            );
+            final int? rowIndexForEdit = recordInHistory?['__rowIndex'] as int?;
+
+            return Card(
+              margin: const EdgeInsets.only(bottom: 10),
+              child: InkWell(
+                // Use InkWell for tap feedback
+                onTap: () {
+                  if (rowIndexForEdit != null) {
+                    widget.onTapDashboardItem(item, rowIndexForEdit);
+                  } else {
+                    // Optionally show a snackbar or log if the record can't be found for editing
+                    debugPrint("Could not find row index for dashboard item: ${item.roastType} - ${item.beanName}");
+                  }
                 },
-                orElse: () => {}, // Return an empty map if not found
-              );
-
-              final int? rowIndexForEdit = recordInHistory?['__rowIndex'] as int?;
-
-              return Card(
-                margin: const EdgeInsets.only(bottom: 10),
-                child: InkWell( // Use InkWell for tap feedback
-                  onTap: () {
-                    if (rowIndexForEdit != null) {
-                      widget.onTapDashboardItem(item, rowIndexForEdit);
-                    } else {
-                      // Optionally show a snackbar or log if the record can't be found for editing
-                      debugPrint("Could not find row index for dashboard item: ${item.roastType} - ${item.beanName}");
-                    }
-                  },
-                  child: Padding(
-                    padding: const EdgeInsets.all(15.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          coffeeName,
-                          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                                fontWeight: FontWeight.bold,
-                                color: Colors.blueGrey[900],
-                              ),
-                        ),
-                        Text(
-                          "Last updated: ${item.date} (${item.shift})",
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
-                        ),
-                        const SizedBox(height: 10),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
+                child: Padding(
+                  padding: const EdgeInsets.all(15.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        coffeeName,
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.blueGrey[900],
+                            ),
+                      ),
+                      Text(
+                        "Last updated: ${item.date} (${item.shift})",
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  "Overall: $mainStockAmountDisplay",
+                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                        fontWeight: FontWeight.bold,
+                                        color: amountColorMain,
+                                      ),
+                                ),
+                                Text("overall stock", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
+                              ],
+                            ),
+                          ),
+                          if (item.roastType != 'Single Origin' && item.roastType != 'Other Inventory')
                             Expanded(
                               child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
+                                crossAxisAlignment: CrossAxisAlignment.end,
                                 children: [
                                   Text(
-                                    "Overall: $mainStockAmountDisplay",
+                                    "Grinder: $grinderAmountDisplay",
                                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                                           fontWeight: FontWeight.bold,
-                                          color: amountColorMain,
+                                          color: amountColorGrinder,
                                         ),
                                   ),
-                                  Text("overall stock", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
+                                  Text("in grinder", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
                                 ],
                               ),
                             ),
-                            if (item.roastType != 'Single Origin' && item.roastType != 'Other Inventory')
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.end,
-                                  children: [
-                                    Text(
-                                      "Grinder: $grinderAmountDisplay",
-                                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                            fontWeight: FontWeight.bold,
-                                            color: amountColorGrinder,
-                                          ),
-                                    ),
-                                    Text("in grinder", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
-                                  ],
-                                ),
-                              ),
-                          ],
-                        ),
-                        if (item.notes.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 8.0),
-                            child: Text(
-                              "Notes: ${item.notes}",
-                              style: TextStyle(fontSize: 10, fontStyle: FontStyle.italic, color: Colors.grey[500]),
-                            ),
+                        ],
+                      ),
+                      if (item.notes.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8.0),
+                          child: Text(
+                            "Notes: ${item.notes}",
+                            style: TextStyle(fontSize: 10, fontStyle: FontStyle.italic, color: Colors.grey[500]),
                           ),
-                      ],
-                    ),
+                        ),
+                    ],
                   ),
                 ),
-              );
-            }).toList(),
+              ),
+            );
+          }).toList(),
           const SizedBox(height: 20),
         ],
       ),
@@ -1102,7 +1102,6 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
       _selectedShift = widget.currentEditRecord!.shift;
       _selectedRoastType = widget.currentEditRecord!.roastType;
       _beanNameController.text = widget.currentEditRecord!.beanName;
-
       _morningInController.text = widget.currentEditRecord!.morningIn == 0.0 ? '' : widget.currentEditRecord!.morningIn.toString();
       _addOnMorningController.text = widget.currentEditRecord!.addOnMorning == 0.0 ? '' : widget.currentEditRecord!.addOnMorning.toString();
       _addOnAfternoonController.text = widget.currentEditRecord!.addOnAfternoon == 0.0 ? '' : widget.currentEditRecord!.addOnAfternoon.toString();
@@ -1112,7 +1111,6 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
       // Assign to unified controllers for SO and Other Inventory
       _soInventoryInController.text = widget.currentEditRecord!.morningStock == 0.0 ? '' : widget.currentEditRecord!.morningStock.toString();
       _soInventoryOutController.text = widget.currentEditRecord!.eveningStock == 0.0 ? '' : widget.currentEditRecord!.eveningStock.toString();
-
       _throwAwayController.text = widget.currentEditRecord!.throwAway.toString();
       _testController.text = widget.currentEditRecord!.test.toString();
       _eventController.text = widget.currentEditRecord!.event.toString();
@@ -1120,8 +1118,6 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
       _notesController.text = widget.currentEditRecord!.notes;
     } else {
       _dateController.text = DateFormat('yyyy-MM-dd').format(DateTime.now());
-      _selectedShift = 'Morning';
-      _selectedRoastType = 'Light Roast'; // Default to a coffee type
       _beanNameController.clear();
       _morningInController.clear();
       _addOnMorningController.clear();
@@ -1129,15 +1125,333 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
       _eveningOutController.clear();
       _lmMorningStockController.clear();
       _lmEveningStockController.clear();
-      _soInventoryInController.clear(); // Clear unified controllers
-      _soInventoryOutController.clear(); // Clear unified controllers
+      _soInventoryInController.clear();
+      _soInventoryOutController.clear();
       _throwAwayController.text = '0';
       _testController.text = '0';
       _eventController.text = '0';
       _employeeShotController.text = '0';
       _notesController.clear();
+      _selectedShift = 'Morning';
+      _selectedRoastType = 'Light Roast';
     }
-    _updateFieldVisibility();
+    _updateDependentFields();
+  }
+
+  void _updateDependentFields() {
+    setState(() {
+      _isSingleOrigin = _selectedRoastType == 'Single Origin';
+      _isOtherInventory = _selectedRoastType == 'Other Inventory';
+      _isMorningShift = _selectedShift == 'Morning';
+
+      // Clear fields that are not relevant to the current selection
+      if (_isSingleOrigin || _isOtherInventory) {
+        _morningInController.clear();
+        _addOnMorningController.clear();
+        _addOnAfternoonController.clear();
+        _eveningOutController.clear();
+        _lmMorningStockController.clear();
+        _lmEveningStockController.clear();
+        // Shot counts are only cleared if roastType is Other Inventory
+        if (_isOtherInventory) {
+          _throwAwayController.text = '0';
+          _testController.text = '0';
+          _eventController.text = '0';
+          _employeeShotController.text = '0';
+        }
+      } else {
+        _soInventoryInController.clear();
+        _soInventoryOutController.clear();
+      }
+
+      if (_isMorningShift) {
+        _addOnAfternoonController.clear();
+        _eveningOutController.clear();
+        _lmEveningStockController.clear();
+        _soInventoryOutController.clear(); // Clear 'out' for SO/Inventory if Morning
+      } else {
+        _morningInController.clear();
+        _addOnMorningController.clear();
+        _lmMorningStockController.clear();
+        _soInventoryInController.clear(); // Clear 'in' for SO/Inventory if Evening
+      }
+    });
+  }
+
+  Future<void> _selectDate(BuildContext context) async {
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: DateTime.tryParse(_dateController.text) ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2101),
+    );
+    if (picked != null && picked != DateTime.tryParse(_dateController.text)) {
+      setState(() {
+        _dateController.text = DateFormat('yyyy-MM-dd').format(picked);
+      });
+    }
+  }
+
+  String _getDropdownLabel() {
+    if (_isSingleOrigin) {
+      return "Select Bean Type (Single Origin)";
+    } else if (_isOtherInventory) {
+      return "Select Item Type (Other Inventory)";
+    } else {
+      return "Select Roast Type (Light/Medium)";
+    }
+  }
+
+  List<String> _getRoastTypeOptions() {
+    return [
+      'Light Roast',
+      'Medium Roast',
+      'Single Origin',
+      'Other Inventory',
+    ];
+  }
+
+  Widget _buildTextField({
+    required TextEditingController controller,
+    required String labelText,
+    TextInputType keyboardType = TextInputType.text,
+    bool enabled = true,
+    List<String>? suggestions,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (suggestions != null && suggestions.isNotEmpty)
+          Autocomplete<String>(
+            optionsBuilder: (TextEditingValue textEditingValue) {
+              if (textEditingValue.text == '') {
+                return const Iterable<String>.empty();
+              }
+              return suggestions.where((String option) {
+                return option.toLowerCase().contains(textEditingValue.text.toLowerCase());
+              });
+            },
+            onSelected: (String selection) {
+              controller.text = selection;
+            },
+            fieldViewBuilder: (BuildContext context, TextEditingController fieldTextEditingController, FocusNode fieldFocusNode, void Function() onFieldSubmitted) {
+              // Ensure the internal controller is kept in sync
+              if (fieldTextEditingController.text != controller.text) {
+                fieldTextEditingController.text = controller.text;
+              }
+              return TextFormField(
+                controller: fieldTextEditingController,
+                focusNode: fieldFocusNode,
+                decoration: InputDecoration(
+                  labelText: labelText,
+                  border: const OutlineInputBorder(),
+                ),
+                keyboardType: keyboardType,
+                enabled: enabled,
+                onChanged: (value) {
+                  controller.text = value; // Update the external controller on change
+                },
+              );
+            },
+          )
+        else
+          TextFormField(
+            controller: controller,
+            decoration: InputDecoration(
+              labelText: labelText,
+              border: const OutlineInputBorder(),
+            ),
+            keyboardType: keyboardType,
+            enabled: enabled,
+          ),
+        const SizedBox(height: 16.0),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20.0),
+      child: Form(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            TextFormField(
+              controller: _dateController,
+              decoration: InputDecoration(
+                labelText: 'Date',
+                border: const OutlineInputBorder(),
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.calendar_today),
+                  onPressed: () => _selectDate(context),
+                ),
+              ),
+              readOnly: true,
+              onTap: () => _selectDate(context),
+            ),
+            const SizedBox(height: 16.0),
+            DropdownButtonFormField<String>(
+              value: _selectedShift,
+              decoration: const InputDecoration(
+                labelText: 'Shift',
+                border: OutlineInputBorder(),
+              ),
+              items: <String>['Morning', 'Evening'].map((String value) {
+                return DropdownMenuItem<String>(
+                  value: value,
+                  child: Text(value),
+                );
+              }).toList(),
+              onChanged: (String? newValue) {
+                setState(() {
+                  _selectedShift = newValue!;
+                  _updateDependentFields();
+                });
+              },
+            ),
+            const SizedBox(height: 16.0),
+            DropdownButtonFormField<String>(
+              value: _selectedRoastType,
+              decoration: InputDecoration(
+                labelText: _getDropdownLabel(),
+                border: const OutlineInputBorder(),
+              ),
+              items: _getRoastTypeOptions().map((String value) {
+                return DropdownMenuItem<String>(
+                  value: value,
+                  child: Text(value),
+                );
+              }).toList(),
+              onChanged: (String? newValue) {
+                setState(() {
+                  _selectedRoastType = newValue!;
+                  _updateDependentFields();
+                });
+              },
+            ),
+            const SizedBox(height: 16.0),
+            if (_isSingleOrigin || _isOtherInventory)
+              _buildTextField(
+                controller: _beanNameController,
+                labelText: _isOtherInventory ? 'Item Name (e.g., Cup, Filter)' : 'Bean Name (e.g., Ethiopia Yirgacheffe)',
+                suggestions: _isOtherInventory ? widget.inventoryNameSuggestions : widget.beanNameSuggestions,
+              ),
+            if (!_isSingleOrigin && !_isOtherInventory) ...[
+              if (_isMorningShift)
+                _buildTextField(
+                  controller: _morningInController,
+                  labelText: 'Morning In (g) - Grinder',
+                  keyboardType: TextInputType.number,
+                ),
+              _buildTextField(
+                controller: _addOnMorningController,
+                labelText: 'Add On Morning (g) - Grinder',
+                keyboardType: TextInputType.number,
+                enabled: _isMorningShift,
+              ),
+              _buildTextField(
+                controller: _addOnAfternoonController,
+                labelText: 'Add On Afternoon (g) - Grinder',
+                keyboardType: TextInputType.number,
+                enabled: !_isMorningShift,
+              ),
+              if (!_isMorningShift)
+                _buildTextField(
+                  controller: _eveningOutController,
+                  labelText: 'Evening Out (g) - Grinder',
+                  keyboardType: TextInputType.number,
+                ),
+            ],
+            // Unified stock fields for Light/Medium (lm) vs Single Origin/Other Inventory (soInventory)
+            if (_isMorningShift)
+              _buildTextField(
+                controller: (_isSingleOrigin || _isOtherInventory) ? _soInventoryInController : _lmMorningStockController,
+                labelText: (_isSingleOrigin || _isOtherInventory) ? '${_isOtherInventory ? 'Inventory' : 'Single Origin'} Total Stock (IN)' : 'Light/Medium Overall Stock (IN)',
+                keyboardType: TextInputType.number,
+              )
+            else
+              _buildTextField(
+                controller: (_isSingleOrigin || _isOtherInventory) ? _soInventoryOutController : _lmEveningStockController,
+                labelText: (_isSingleOrigin || _isOtherInventory) ? '${_isOtherInventory ? 'Inventory' : 'Single Origin'} Total Stock (OUT)' : 'Light/Medium Overall Stock (OUT)',
+                keyboardType: TextInputType.number,
+              ),
+
+            if (!_isOtherInventory) ...[
+              _buildTextField(
+                controller: _throwAwayController,
+                labelText: 'Throw Away (Shot)',
+                keyboardType: TextInputType.number,
+              ),
+              _buildTextField(
+                controller: _testController,
+                labelText: 'Test (Shot)',
+                keyboardType: TextInputType.number,
+              ),
+              _buildTextField(
+                controller: _eventController,
+                labelText: 'Event (Shot)',
+                keyboardType: TextInputType.number,
+              ),
+              _buildTextField(
+                controller: _employeeShotController,
+                labelText: 'Employee (Shot)',
+                keyboardType: TextInputType.number,
+              ),
+            ],
+            _buildTextField(
+              controller: _notesController,
+              labelText: 'Notes/Comments',
+              keyboardType: TextInputType.multiline,
+            ),
+            const SizedBox(height: 16.0),
+            ElevatedButton(
+              onPressed: () {
+                widget.submitEntry(
+                  date: _dateController.text,
+                  shift: _selectedShift,
+                  roastType: _selectedRoastType!,
+                  beanName: _beanNameController.text,
+                  morningInStr: _morningInController.text,
+                  addOnMorningStr: _addOnMorningController.text,
+                  addOnAfternoonStr: _addOnAfternoonController.text,
+                  eveningOutStr: _eveningOutController.text,
+                  lmMorningStockStr: _lmMorningStockController.text,
+                  lmEveningStockStr: _lmEveningStockController.text,
+                  soInStr: _soInventoryInController.text,
+                  soOutStr: _soInventoryOutController.text,
+                  throwAwayStr: _throwAwayController.text,
+                  testStr: _testController.text,
+                  eventStr: _eventController.text,
+                  employeeShotStr: _employeeShotController.text,
+                  notes: _notesController.text,
+                );
+              },
+              child: Text(widget.currentEditRecord == null ? 'Add Stock Entry' : 'Update Stock Entry'),
+            ),
+            if (widget.currentEditRecord != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 16.0),
+                child: OutlinedButton(
+                  onPressed: widget.clearEditState,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.red,
+                    side: const BorderSide(color: Colors.red),
+                    padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 20),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  child: const Text('Clear Edit Form'),
+                ),
+              ),
+            const SizedBox(height: 16.0),
+            TextButton(
+              onPressed: widget.goToDashboard,
+              child: const Text('Back to Dashboard'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -1150,456 +1464,14 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
     _eveningOutController.dispose();
     _lmMorningStockController.dispose();
     _lmEveningStockController.dispose();
-    _soInventoryInController.dispose(); // Dispose unified controllers
-    _soInventoryOutController.dispose(); // Dispose unified controllers
+    _soInventoryInController.dispose();
+    _soInventoryOutController.dispose();
     _throwAwayController.dispose();
     _testController.dispose();
     _eventController.dispose();
     _employeeShotController.dispose();
     _notesController.dispose();
     super.dispose();
-  }
-
-  void _adjustDate(int days) {
-    _dateController.text = adjustDate(_dateController.text, days);
-  }
-
-  void _updateFieldVisibility() {
-    if (mounted) {
-      setState(() {
-        _isSingleOrigin = _selectedRoastType == 'Single Origin';
-        _isOtherInventory = _selectedRoastType == 'Other Inventory';
-        _isMorningShift = _selectedShift == 'Morning';
-
-        // Clear irrelevant fields based on Roast Type
-        if (!_isSingleOrigin && !_isOtherInventory) { // Coffee Beans
-          _beanNameController.clear();
-          _soInventoryInController.clear(); // Clear unified SO/Inventory fields
-          _soInventoryOutController.clear(); // Clear unified SO/Inventory fields
-        } else { // Single Origin or Other Inventory
-          _morningInController.clear();
-          _addOnMorningController.clear();
-          _addOnAfternoonController.clear();
-          _eveningOutController.clear();
-          _lmMorningStockController.clear();
-          _lmEveningStockController.clear();
-        }
-
-        // Clear irrelevant fields based on Shift
-        if (_isMorningShift) {
-          _addOnAfternoonController.clear();
-          _eveningOutController.clear();
-          if (!_isSingleOrigin && !_isOtherInventory) _lmEveningStockController.clear();
-          if (_isSingleOrigin || _isOtherInventory) _soInventoryOutController.clear(); // Clear unified OUT for morning
-        } else { // Evening Shift
-          _morningInController.clear();
-          _addOnMorningController.clear();
-          if (!_isSingleOrigin && !_isOtherInventory) _lmMorningStockController.clear();
-          if (_isSingleOrigin || _isOtherInventory) _soInventoryInController.clear(); // Clear unified IN for evening
-        }
-
-        // Shot-related fields are hidden for Other Inventory
-        if (_isOtherInventory) {
-          _throwAwayController.text = '0';
-          _testController.text = '0';
-          _eventController.text = '0';
-          _employeeShotController.text = '0';
-        }
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // Determine which suggestions list to use based on selected roast type
-    List<String> currentSuggestions = [];
-    String beanNameLabel = 'Bean Name (if SO)';
-    if (_selectedRoastType == 'Single Origin') {
-      // Show unique, sorted names
-      currentSuggestions = widget.beanNameSuggestions.toSet().toList()..sort();
-      beanNameLabel = 'Bean Name (e.g., Kenya AA)';
-    } else if (_selectedRoastType == 'Other Inventory') {
-      currentSuggestions = widget.inventoryNameSuggestions.toSet().toList()..sort();
-      beanNameLabel = 'Item Name (e.g., Milk, Banana)';
-    }
-
-    return ListView(
-      padding: const EdgeInsets.all(20.0),
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            IconButton(
-              icon: const Icon(Icons.arrow_left),
-              tooltip: "Previous Day",
-              onPressed: () => setState(() => _adjustDate(-1)),
-            ),
-            Expanded(
-              child: TextField(
-                controller: _dateController,
-                decoration: const InputDecoration(labelText: "Date"),
-                readOnly: true,
-                textAlign: TextAlign.center,
-              ),
-            ),
-            IconButton(
-              icon: const Icon(Icons.arrow_right),
-              tooltip: "Next Day",
-              onPressed: () => setState(() => _adjustDate(1)),
-            ),
-          ],
-        ),
-        const SizedBox(height: 15),
-        Text(
-          "Shift",
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                fontWeight: FontWeight.w500,
-                color: Colors.blueGrey[800],
-              ),
-        ),
-        Row(
-          children: [
-            Expanded(
-              child: RadioListTile<String>(
-                title: const Text("Morning"),
-                value: "Morning",
-                groupValue: _selectedShift,
-                onChanged: (value) {
-                  setState(() {
-                    _selectedShift = value!;
-                    _updateFieldVisibility();
-                  });
-                },
-              ),
-            ),
-            Expanded(
-              child: RadioListTile<String>(
-                title: const Text("Evening"),
-                value: "Evening",
-                groupValue: _selectedShift,
-                onChanged: (value) {
-                  setState(() {
-                    _selectedShift = value!;
-                    _updateFieldVisibility();
-                  });
-                },
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 15),
-        DropdownButtonFormField<String>(
-          value: _selectedRoastType,
-          decoration: const InputDecoration(labelText: "Roast Type"),
-          items: const [
-            DropdownMenuItem(value: "Light Roast", child: Text("Light Roast")),
-            DropdownMenuItem(value: "Medium Roast", child: Text("Medium Roast")),
-            DropdownMenuItem(value: "Single Origin", child: Text("Single Origin")),
-            DropdownMenuItem(value: "Other Inventory", child: Text("Other Inventory")), // NEW Roast Type
-          ],
-          onChanged: (value) {
-            setState(() {
-              _selectedRoastType = value;
-              _updateFieldVisibility();
-            });
-          },
-        ),
-        const SizedBox(height: 15),
-        Visibility(
-          visible: _isSingleOrigin || _isOtherInventory,
-          child: Autocomplete<String>(
-            optionsBuilder: (TextEditingValue textEditingValue) {
-              // Show all options if field is empty or focused
-              if (textEditingValue.text == '') {
-                return currentSuggestions;
-              }
-              return currentSuggestions.where((String option) {
-                return option.toLowerCase().contains(textEditingValue.text.toLowerCase());
-              });
-            },
-            displayStringForOption: (option) => option,
-            onSelected: (String selection) {
-              _beanNameController.text = selection;
-            },
-            fieldViewBuilder: (BuildContext context,
-                TextEditingController textEditingController,
-                FocusNode focusNode,
-                VoidCallback onFieldSubmitted) {
-              // Keep _beanNameController in sync with the field
-              textEditingController.text = _beanNameController.text;
-              textEditingController.selection = TextSelection.fromPosition(
-                TextPosition(offset: textEditingController.text.length),
-              );
-              return TextField(
-                controller: textEditingController,
-                focusNode: focusNode,
-                decoration: InputDecoration(
-                  labelText: beanNameLabel,
-                  suffixIcon: PopupMenuButton<String>(
-                    icon: const Icon(Icons.arrow_drop_down),
-                    onSelected: (String value) {
-                      textEditingController.text = value;
-                      _beanNameController.text = value;
-                    },
-                    itemBuilder: (BuildContext context) {
-                      return currentSuggestions.map((String value) {
-                        return PopupMenuItem<String>(
-                          value: value,
-                          child: Text(value),
-                        );
-                      }).toList();
-                    },
-                  ),
-                ),
-                onChanged: (value) {
-                  _beanNameController.text = value;
-                },
-                onSubmitted: (value) {
-                  onFieldSubmitted();
-                },
-              );
-            },
-            optionsViewBuilder: (BuildContext context, AutocompleteOnSelected<String> onSelected, Iterable<String> options) {
-              return Align(
-                alignment: Alignment.topLeft,
-                child: Material(
-                  elevation: 4.0,
-                  child: SizedBox(
-                    height: 200.0,
-                    width: 300.0,
-                    child: ListView.builder(
-                      padding: const EdgeInsets.all(8.0),
-                      itemCount: options.length,
-                      itemBuilder: (BuildContext context, int index) {
-                        final String option = options.elementAt(index);
-                        return ListTile(
-                          title: Text(option),
-                          onTap: () {
-                            onSelected(option);
-                          },
-                        );
-                      },
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-        const SizedBox(height: 15),
-
-        // --- Coffee Beans Specific Fields (Hidden for Single Origin and Other Inventory) ---
-        Visibility(
-          visible: !_isSingleOrigin && !_isOtherInventory && _isMorningShift,
-          child: TextField(
-            controller: _morningInController,
-            decoration: const InputDecoration(
-              labelText: "Morning In (g) - Grinder start",
-              helperText: "Amount in grinder at start of morning shift (Light/Medium)",
-            ),
-            keyboardType: TextInputType.number,
-          ),
-        ),
-        const SizedBox(height: 15),
-        Visibility(
-          visible: !_isSingleOrigin && !_isOtherInventory && _isMorningShift,
-          child: TextField(
-            controller: _addOnMorningController,
-            decoration: const InputDecoration(
-              labelText: "Add On Morning (g)",
-              helperText: "Additional beans added to grinder during morning (Light/Medium)",
-            ),
-            keyboardType: TextInputType.number,
-          ),
-        ),
-        const SizedBox(height: 15),
-        Visibility(
-          visible: !_isSingleOrigin && !_isOtherInventory && !_isMorningShift,
-          child: TextField(
-            controller: _addOnAfternoonController,
-            decoration: const InputDecoration(
-              labelText: "Add On Afternoon (g)",
-              helperText: "Additional beans added to grinder during afternoon (Light/Medium)",
-            ),
-            keyboardType: TextInputType.number,
-          ),
-        ),
-        const SizedBox(height: 15),
-        Visibility(
-          visible: !_isSingleOrigin && !_isOtherInventory && !_isMorningShift,
-          child: TextField(
-            controller: _eveningOutController,
-            decoration: const InputDecoration(
-              labelText: "Evening Out (g) - Remaining in grinder",
-              helperText: "Amount remaining in grinder at end of evening shift (Light/Medium)",
-            ),
-            keyboardType: TextInputType.number,
-          ),
-        ),
-        const SizedBox(height: 15),
-        Visibility(
-          visible: !_isSingleOrigin && !_isOtherInventory && _isMorningShift, // Only for Light/Medium Morning
-          child: TextField(
-            controller: _lmMorningStockController,
-            decoration: const InputDecoration(
-              labelText: "Light/Medium Overall Stock (IN)",
-              helperText: "Total overall stock at morning for Light/Medium (includes new bags)",
-            ),
-            keyboardType: TextInputType.number,
-          ),
-        ),
-        const SizedBox(height: 15),
-        Visibility(
-          visible: !_isSingleOrigin && !_isOtherInventory && !_isMorningShift, // Only for Light/Medium Evening
-          child: TextField(
-            controller: _lmEveningStockController,
-            decoration: const InputDecoration(
-              labelText: "Light/Medium Overall Stock (OUT)",
-              helperText: "Total overall stock at evening for Light/Medium",
-            ),
-            keyboardType: TextInputType.number,
-          ),
-        ),
-        const SizedBox(height: 15),
-
-        // --- Single Origin / Other Inventory Specific Fields (Unified) ---
-        Visibility(
-          visible: (_isSingleOrigin || _isOtherInventory) && _isMorningShift,
-          child: TextField(
-            controller: _soInventoryInController, // Use unified controller
-            decoration: InputDecoration(
-              labelText: "${_selectedRoastType} Total Stock (IN)",
-              helperText: "Total ${_selectedRoastType} stock at start of morning shift (includes new deliveries)",
-            ),
-            keyboardType: TextInputType.number,
-          ),
-        ),
-        const SizedBox(height: 15),
-        Visibility(
-          visible: (_isSingleOrigin || _isOtherInventory) && !_isMorningShift,
-          child: TextField(
-            controller: _soInventoryOutController, // Use unified controller
-            decoration: InputDecoration(
-              labelText: "${_selectedRoastType} Total Stock (OUT)",
-              helperText: "Total ${_selectedRoastType} stock at end of evening shift",
-            ),
-            keyboardType: TextInputType.number,
-          ),
-        ),
-        const SizedBox(height: 15),
-
-        // --- Shot-related fields (Hidden for Other Inventory) ---
-        Visibility(
-          visible: !_isOtherInventory,
-          child: Column(
-            children: [
-              const Divider(height: 20, color: Colors.blueGrey),
-              Text(
-                "Other Metrics (Number of Shots)",
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.blueGrey[800],
-                    ),
-              ),
-              const SizedBox(height: 15),
-              TextField(
-                controller: _throwAwayController,
-                decoration: const InputDecoration(
-                  labelText: "Throw Away (Shot)",
-                  helperText: "Number of shots discarded (e.g., undrinkable, bad extraction)",
-                ),
-                keyboardType: TextInputType.number,
-              ),
-              const SizedBox(height: 15),
-              TextField(
-                controller: _testController,
-                decoration: const InputDecoration(
-                  labelText: "Test (Shot)",
-                  helperText: "Number of shots used for testing/calibration",
-                ),
-                keyboardType: TextInputType.number,
-              ),
-              const SizedBox(height: 15),
-              TextField(
-                controller: _eventController,
-                decoration: const InputDecoration(
-                  labelText: "Event (Shot)",
-                  helperText: "Number of shots used for activities or events",
-                ),
-                keyboardType: TextInputType.number,
-              ),
-              const SizedBox(height: 15),
-              TextField(
-                controller: _employeeShotController,
-                decoration: const InputDecoration(
-                  labelText: "Employee (Shot)",
-                  helperText: "Number of shots related to employee activity (e.g., training, personal use)",
-                ),
-                keyboardType: TextInputType.number,
-              ),
-              const SizedBox(height: 15),
-            ],
-          ),
-        ),
-        const Divider(height: 20, color: Colors.blueGrey),
-        TextField(
-          controller: _notesController,
-          decoration: const InputDecoration(labelText: "Notes"),
-          maxLines: 5,
-          minLines: 3,
-        ),
-        const SizedBox(height: 20),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
-          children: [
-            Expanded(
-              child: ElevatedButton.icon(
-                icon: const Icon(Icons.cancel_rounded),
-                label: const Text("Cancel"),
-                onPressed: () {
-                  widget.clearEditState();
-                  widget.goToDashboard();
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red[600],
-                ),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: ElevatedButton.icon(
-                icon: const Icon(Icons.save_rounded),
-                label: Text(widget.currentEditRecord == null ? "Save Daily Entry" : "Update Entry"),
-                onPressed: () {
-                  widget.submitEntry(
-                    date: _dateController.text,
-                    shift: _selectedShift,
-                    roastType: _selectedRoastType!,
-                    beanName: _beanNameController.text,
-                    morningInStr: _morningInController.text,
-                    addOnMorningStr: _addOnMorningController.text,
-                    addOnAfternoonStr: _addOnAfternoonController.text,
-                    eveningOutStr: _eveningOutController.text,
-                    lmMorningStockStr: _lmMorningStockController.text,
-                    lmEveningStockStr: _lmEveningStockController.text,
-                    soInStr: _soInventoryInController.text, // Pass unified controller value
-                    soOutStr: _soInventoryOutController.text, // Pass unified controller value
-                    throwAwayStr: _throwAwayController.text,
-                    testStr: _testController.text,
-                    eventStr: _eventController.text,
-                    employeeShotStr: _employeeShotController.text,
-                    notes: _notesController.text,
-                  );
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.green[600],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
   }
 }
 
@@ -1621,105 +1493,152 @@ class HistoryContent extends StatefulWidget {
 }
 
 class _HistoryContentState extends State<HistoryContent> {
+  // Add a TextEditingController for search input
+  final TextEditingController _searchController = TextEditingController();
+  // State variable to hold filtered history data
+  List<Map<String, dynamic>> _filteredHistoryData = [];
+
+  @override
+  void initState() {
+    super.initState();
+    // Initialize filtered data with all history data
+    _filteredHistoryData = widget.historyData;
+    // Add listener to search controller for real-time filtering
+    _searchController.addListener(_filterHistory);
+  }
+
+  @override
+  void didUpdateWidget(covariant HistoryContent oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Update filtered data when historyData changes
+    if (widget.historyData != oldWidget.historyData) {
+      _filterHistory();
+    }
+  }
+
+  void _filterHistory() {
+    final query = _searchController.text.toLowerCase();
+    setState(() {
+      _filteredHistoryData = widget.historyData.where((recordMap) {
+        final record = Record.fromMap(recordMap);
+        return record.date.toLowerCase().contains(query) ||
+               record.shift.toLowerCase().contains(query) ||
+               record.roastType.toLowerCase().contains(query) ||
+               record.beanName.toLowerCase().contains(query) ||
+               record.notes.toLowerCase().contains(query);
+      }).toList();
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.removeListener(_filterHistory);
+    _searchController.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return RefreshIndicator(
       onRefresh: widget.refreshHistoryData,
-      child: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 20.0),
-          child: Column(
-            children: [
-              Text(
-                "All Recorded Entries",
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.blueGrey[800],
-                    ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 20),
-              if (widget.historyData.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.all(20.0),
-                  child: Text(
-                    "No history data available. Add an entry to see it here!",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.grey[600]),
+      child: Padding(
+        padding: const EdgeInsets.all(20.0),
+        child: Column(
+          children: [
+            Text(
+              "Stock History",
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.blueGrey[800],
                   ),
-                )
-              else
-                SingleChildScrollView(
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: _searchController,
+              decoration: InputDecoration(
+                labelText: 'Search History',
+                hintText: 'Date, Shift, Roast Type, Bean Name, Notes...',
+                prefixIcon: const Icon(Icons.search),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            if (_filteredHistoryData.isEmpty)
+              Padding(
+                padding: const EdgeInsets.all(20.0),
+                child: Text(
+                  widget.historyData.isEmpty ? "No history data available. Add an entry!" : "No matching records found for your search.",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey[600]),
+                ),
+              )
+            else
+              Expanded(
+                child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
-                  child: Card(
-                    elevation: 3,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(minWidth: MediaQuery.of(context).size.width - 40), // Ensure table takes full width
                     child: DataTable(
-                      columnSpacing: 10,
-                      dataRowColor: MaterialStateProperty.resolveWith<Color?>(
-                        (Set<MaterialState> states) {
-                          if (states.contains(MaterialState.hovered)) {
-                            return Colors.grey[50];
-                          }
-                          return Colors.white;
-                        },
-                      ),
-                      headingRowColor: MaterialStateProperty.all(Colors.blueGrey[100]),
-                      border: TableBorder.all(
-                        color: Colors.grey[200]!,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      columns: const [
-                        DataColumn(label: Text("Date", style: TextStyle(color: Colors.blueGrey))),
-                        DataColumn(label: Text("Shift", style: TextStyle(color: Colors.blueGrey))),
-                        DataColumn(label: Text("Coffee/Item", style: TextStyle(color: Colors.blueGrey))),
-                        DataColumn(label: Text("Morning In (Grinder)", style: TextStyle(color: Colors.blueGrey))),
-                        DataColumn(label: Text("Add On Morning (Grinder)", style: TextStyle(color: Colors.blueGrey))),
-                        DataColumn(label: Text("Add On Afternoon (Grinder)", style: TextStyle(color: Colors.blueGrey))),
-                        DataColumn(label: Text("Evening Out (Grinder)", style: TextStyle(color: Colors.blueGrey))),
-                        DataColumn(label: Text("Overall Stock", style: TextStyle(color: Colors.blueGrey))),
-                        DataColumn(label: Text("Throw Away (Shot)", style: TextStyle(color: Colors.blueGrey))),
-                        DataColumn(label: Text("Test (Shot)", style: TextStyle(color: Colors.blueGrey))),
-                        DataColumn(label: Text("Event (Shot)", style: TextStyle(color: Colors.blueGrey))),
-                        DataColumn(label: Text("Employee (Shot)", style: TextStyle(color: Colors.blueGrey))),
-                        DataColumn(label: Text("Notes/Comments", style: TextStyle(color: Colors.blueGrey))),
-                        DataColumn(label: Text("Actions", style: TextStyle(color: Colors.blueGrey))),
+                      columnSpacing: 12.0, // Reduced column spacing
+                      dataRowMinHeight: 40.0, // Min height for rows
+                      dataRowMaxHeight: 60.0, // Max height for rows
+                      headingRowColor: MaterialStateProperty.resolveWith((states) => Colors.blue.withOpacity(0.1)),
+                      columns: const <DataColumn>[
+                        DataColumn(label: Text('Date', style: TextStyle(fontWeight: FontWeight.bold))),
+                        DataColumn(label: Text('Shift', style: TextStyle(fontWeight: FontWeight.bold))),
+                        DataColumn(label: Text('Coffee/Item', style: TextStyle(fontWeight: FontWeight.bold))),
+                        DataColumn(label: Text('Morning In', style: TextStyle(fontWeight: FontWeight.bold))),
+                        DataColumn(label: Text('AddOn Mor', style: TextStyle(fontWeight: FontWeight.bold))),
+                        DataColumn(label: Text('AddOn Aft', style: TextStyle(fontWeight: FontWeight.bold))),
+                        DataColumn(label: Text('Evening Out', style: TextStyle(fontWeight: FontWeight.bold))),
+                        DataColumn(label: Text('Stock (g)', style: TextStyle(fontWeight: FontWeight.bold))),
+                        DataColumn(label: Text('Throw', style: TextStyle(fontWeight: FontWeight.bold))),
+                        DataColumn(label: Text('Test', style: TextStyle(fontWeight: FontWeight.bold))),
+                        DataColumn(label: Text('Event', style: TextStyle(fontWeight: FontWeight.bold))),
+                        DataColumn(label: Text('Emp', style: TextStyle(fontWeight: FontWeight.bold))),
+                        DataColumn(label: Text('Notes', style: TextStyle(fontWeight: FontWeight.bold))),
+                        DataColumn(label: Text('Edit', style: TextStyle(fontWeight: FontWeight.bold))),
                       ],
-                      rows: widget.historyData.map((itemMap) {
+                      rows: _filteredHistoryData.map((itemMap) {
                         final item = Record.fromMap(itemMap);
-                        final int rowIndex = itemMap['__rowIndex'];
+                        final rowIndex = itemMap['__rowIndex'] as int; // Get the original row index
 
                         String coffeeItemName;
                         if (item.roastType == 'Single Origin' || item.roastType == 'Other Inventory') {
-                          coffeeItemName = item.beanName;
+                          coffeeItemName = "${item.roastType}: ${item.beanName}";
                         } else {
                           coffeeItemName = item.roastType;
                         }
 
-                        String mainStockVal = formatQuantityDisplay(
-                          item.shift == 'Morning' ? item.morningStock : item.eveningStock,
-                          unit: 'g',
-                          roastType: item.roastType,
-                        );
+                        // Display logic for Morning In, Add On Morning/Afternoon, Evening Out
+                        String morningInDisplay = 'N/A';
+                        String addOnMorningDisplay = 'N/A';
+                        String addOnAfternoonDisplay = 'N/A';
+                        String eveningOutDisplay = 'N/A';
 
-                        String morningInDisplay = item.roastType != 'Single Origin' && item.roastType != 'Other Inventory'
-                            ? formatQuantityDisplay(item.morningIn, unit: 'g', roastType: item.roastType)
-                            : 'N/A';
-                        String addOnMorningDisplay = item.roastType != 'Single Origin' && item.roastType != 'Other Inventory'
-                            ? formatQuantityDisplay(item.addOnMorning, unit: 'g', roastType: item.roastType)
-                            : 'N/A';
-                        String addOnAfternoonDisplay = item.roastType != 'Single Origin' && item.roastType != 'Other Inventory'
-                            ? formatQuantityDisplay(item.addOnAfternoon, unit: 'g', roastType: item.roastType)
-                            : 'N/A';
-                        String eveningOutDisplay = item.roastType != 'Single Origin' && item.roastType != 'Other Inventory'
-                            ? formatQuantityDisplay(item.eveningOut, unit: 'g', roastType: item.roastType)
-                            : 'N/A';
+                        if (item.roastType != 'Single Origin' && item.roastType != 'Other Inventory') {
+                          morningInDisplay = formatQuantityDisplay(item.morningIn);
+                          addOnMorningDisplay = formatQuantityDisplay(item.addOnMorning);
+                          addOnAfternoonDisplay = formatQuantityDisplay(item.addOnAfternoon);
+                          eveningOutDisplay = formatQuantityDisplay(item.eveningOut);
+                        }
 
-                        String throwAwayDisplay = item.roastType != 'Other Inventory' ? formatQuantityDisplay(item.throwAway, unit: 'shot') : 'N/A';
-                        String testDisplay = item.roastType != 'Other Inventory' ? formatQuantityDisplay(item.test, unit: 'shot') : 'N/A';
-                        String eventDisplay = item.roastType != 'Other Inventory' ? formatQuantityDisplay(item.event, unit: 'shot') : 'N/A';
-                        String employeeShotDisplay = item.roastType != 'Other Inventory' ? formatQuantityDisplay(item.employeeShot, unit: 'shot') : 'N/A';
+                        // Display logic for main stock based on shift and roast type
+                        String mainStockVal;
+                        if (item.roastType == 'Single Origin' || item.roastType == 'Other Inventory') {
+                          mainStockVal = formatQuantityDisplay(item.shift == 'Morning' ? item.morningStock : item.eveningStock, unit: 'g', roastType: item.roastType);
+                        } else {
+                          mainStockVal = formatQuantityDisplay(item.shift == 'Morning' ? item.morningStock : item.eveningStock, unit: 'g', roastType: item.roastType);
+                        }
 
+                        // Display logic for shot counts
+                        String throwAwayDisplay = formatQuantityDisplay(item.throwAway, unit: 'shot');
+                        String testDisplay = formatQuantityDisplay(item.test, unit: 'shot');
+                        String eventDisplay = formatQuantityDisplay(item.event, unit: 'shot');
+                        String employeeShotDisplay = formatQuantityDisplay(item.employeeShot, unit: 'shot');
 
                         return DataRow(
                           cells: [
@@ -1751,8 +1670,8 @@ class _HistoryContentState extends State<HistoryContent> {
                     ),
                   ),
                 ),
-            ],
-          ),
+              ),
+          ],
         ),
       ),
     );
