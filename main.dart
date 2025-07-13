@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle; // Import rootBundle
+import 'package:flutter/services.dart' show rootBundle; // Import for loading assets
 import 'package:intl/intl.dart';
 import 'package:googleapis/sheets/v4.dart' as sheets;
 import 'package:googleapis_auth/auth_io.dart' as auth;
@@ -69,16 +69,13 @@ const List<String> expectedHeaders = [
   'Date', 'Shift', 'Roast Type', 'Bean Name (if SO)', 'Morning In (g)',
   'Add On Morning (g)', 'Add On Afternoon (g)', 'Evening Out (g)',
   'Morning Stock (g)', 'Evening Stock (g)', 'Throw Away (Shot)',
-  'Test (Shot)', 'Event (Shot)', 'Employee (Shot)', 'Notes/Comments'
+  'Test (Shot)', 'Test (Shot)', 'Event (Shot)', 'Employee (Shot)', 'Notes/Comments'
 ];
 
 // --- GoogleSheetService Class ---
 class GoogleSheetService {
   sheets.SheetsApi? _sheetsApi;
   String? _spreadsheetId;
-
-  // Remove the hardcoded empty JSON string
-  // final String _serviceAccountJson = r''' {} ''';
 
   final String googleSheetName = 'Daily Checklist';
   final String worksheetName = 'Copy of Coffee Stock Tracker Table';
@@ -110,9 +107,10 @@ class GoogleSheetService {
       bool headersMatch = false;
       if (currentFirstRow != null && currentFirstRow.isNotEmpty) {
         if (currentFirstRow[0].length == expectedHeaders.length) {
+          final List<String> currentHeaders = currentFirstRow[0].map((e) => e.toString()).toList();
           headersMatch = true;
           for (int i = 0; i < expectedHeaders.length; i++) {
-            if (currentFirstRow[0][i]?.toString() != expectedHeaders[i]) {
+            if (currentHeaders[i] != expectedHeaders[i]) {
               headersMatch = false;
               break;
             }
@@ -272,8 +270,6 @@ class GoogleSheetService {
   }
 }
 
-// ... (rest of your main.dart file remains the same)
-
 // --- Utility Functions ---
 
 String formatQuantityDisplay(dynamic value, {String unit = 'g', String roastType = ''}) {
@@ -358,7 +354,33 @@ Future<List<Record>> getDashboardData(GoogleSheetService sheetService) async {
     }
   }
 
-  final displayStock = latestStock.values.toList();
+  List<Record> displayStock = latestStock.values.toList();
+
+  // --- Apply Dashboard Filtering Logic ---
+  final now = DateTime.now();
+  final sevenDaysAgo = now.subtract(const Duration(days: 7));
+
+  displayStock = displayStock.where((record) {
+    // Always show Light Roast and Medium Roast
+    if (record.roastType == 'Light Roast' || record.roastType == 'Medium Roast') {
+      return true;
+    }
+
+    // Filter out if not updated within 7 days
+    final recordDate = DateTime.tryParse(record.date);
+    if (recordDate != null && recordDate.isBefore(sevenDaysAgo)) {
+      return false; // Exclude if older than 7 days
+    }
+
+    // Filter out if stock is empty (both evening and morning stock are 0)
+    if (record.eveningStock == 0 && record.morningStock == 0) {
+      return false; // Exclude if stock is 0
+    }
+
+    return true; // Keep the record if it passes all filters or is an exception
+  }).toList();
+  // --- End Dashboard Filtering Logic ---
+
   displayStock.sort((a, b) {
     int roastTypeCompare = a.roastType.compareTo(b.roastType);
     if (roastTypeCompare != 0) return roastTypeCompare;
