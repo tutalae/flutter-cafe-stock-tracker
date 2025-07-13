@@ -1090,7 +1090,7 @@ class _DashboardContentState extends State<DashboardContent> {
 
     // Logic for main stock color and card background
     if (item.minimumStock != null && item.minimumStock! > 0 && parsedMainStockAmount != null) {
-      if (parsedMainStockAmount < item.minimumStock!) { // Highlight red if below min
+      if (parsedMainStockAmount <= item.minimumStock!) { // Changed from < to <=
         cardColor = Colors.red.shade300; // Stronger red for card background
         amountColorMain = Colors.red[900]!; // Darker red for text
         mainStockFontWeight = FontWeight.w900; // Extra bold
@@ -1124,7 +1124,7 @@ class _DashboardContentState extends State<DashboardContent> {
       }
 
       // Override grinder color if overall stock is below minimum for the item
-      if (item.minimumStock != null && item.minimumStock! > 0 && parsedMainStockAmount != null && parsedMainStockAmount < item.minimumStock!) {
+      if (item.minimumStock != null && item.minimumStock! > 0 && parsedMainStockAmount != null && parsedMainStockAmount <= item.minimumStock!) { // Changed from < to <=
         amountColorGrinder = Colors.red[900]!; // Make grinder text red if overall item is critically low
       }
 
@@ -1183,7 +1183,7 @@ class _DashboardContentState extends State<DashboardContent> {
                                     color: amountColorMain, // Apply dynamic color
                                   ),
                             ),
-                            if (item.minimumStock != null && item.minimumStock! > 0 && parsedMainStockAmount != null && parsedMainStockAmount < item.minimumStock!)
+                            if (item.minimumStock != null && item.minimumStock! > 0 && parsedMainStockAmount != null && parsedMainStockAmount <= item.minimumStock!) // Changed from < to <=
                               Padding(
                                 padding: const EdgeInsets.only(left: 8.0),
                                 child: Icon(Icons.warning, color: Colors.red[800], size: 24), // Warning icon
@@ -1212,14 +1212,6 @@ class _DashboardContentState extends State<DashboardContent> {
                     ),
                 ],
               ),
-              if (item.minimumStock != null && item.minimumStock! > 0)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8.0),
-                  child: Text(
-                    "Minimum: ${formatQuantityDisplay(item.minimumStock, unit: item.roastType.contains('Roast') || item.roastType == 'Single Origin' ? 'g' : 'units')}", // Display min stock
-                    style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic, color: Colors.blueGrey[500]),
-                  ),
-                ),
               if (item.notes.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 8.0),
