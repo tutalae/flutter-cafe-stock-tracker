@@ -866,6 +866,7 @@ class _MainScreenState extends State<MainScreen> {
                 _clearEditState();
               });
             },
+            sheetService: _sheetService, // Pass the sheet service
             beanNameSuggestions: _beanNameSuggestions.toList(),
             inventoryNameSuggestions: _inventoryNameSuggestions.toList(),
           ),
@@ -1122,6 +1123,7 @@ class DailyEntryContent extends StatefulWidget {
   final Record? currentEditRecord;
   final VoidCallback clearEditState;
   final VoidCallback goToDashboard;
+  final GoogleSheetService sheetService; // New: Pass GoogleSheetService
   final List<String> beanNameSuggestions;
   final List<String> inventoryNameSuggestions;
 
@@ -1131,6 +1133,7 @@ class DailyEntryContent extends StatefulWidget {
     this.currentEditRecord,
     required this.clearEditState,
     required this.goToDashboard,
+    required this.sheetService, // New: Require GoogleSheetService
     required this.beanNameSuggestions,
     required this.inventoryNameSuggestions,
   });
@@ -1162,10 +1165,14 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
   bool _isOtherInventory = false;
   bool _isMorningShift = true;
 
+  Record? _lastRecordForSelectedType; // New: Store the last record for display
+
   @override
   void initState() {
     super.initState();
     _initializeForm();
+    // Listen for changes to beanNameController to fetch last record
+    _beanNameController.addListener(_fetchAndDisplayLastRecord);
   }
 
   @override
@@ -1173,6 +1180,11 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
     super.didUpdateWidget(oldWidget);
     if (widget.currentEditRecord != oldWidget.currentEditRecord) {
       _initializeForm();
+      _fetchAndDisplayLastRecord(); // Re-fetch on edit record change
+    }
+    // Also re-fetch if sheetService itself somehow changes (unlikely for this app)
+    if (widget.sheetService != oldWidget.sheetService) {
+      _fetchAndDisplayLastRecord();
     }
   }
 
@@ -1243,6 +1255,7 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
       _notesController.clear();
     }
     _updateDependentFields();
+    _fetchAndDisplayLastRecord(); // Initial fetch for last record based on default/edited values
   }
 
   void _updateDependentFields() {
@@ -1280,6 +1293,73 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
         _lmMorningStockController.clear();
         _soInventoryInController.clear();
       }
+    });
+    _fetchAndDisplayLastRecord(); // Also fetch when roast type or shift changes
+  }
+
+  Future<void> _fetchAndDisplayLastRecord() async {
+    // Only fetch if a roast type is selected
+    if (_selectedRoastType == null || _selectedRoastType!.isEmpty) {
+      setState(() {
+        _lastRecordForSelectedType = null;
+      });
+      return;
+    }
+
+    final allRecordsWithIndex = await widget.sheetService.getAllRecordsWithIndex();
+    final List<Record> allRecords = allRecordsWithIndex.map((map) => Record.fromMap(map)).toList();
+
+    Record? latestRecord;
+    DateTime? latestDate;
+    DateTime? latestUpdateTime;
+
+    for (var record in allRecords) {
+      // Filter by roastType
+      if (record.roastType != _selectedRoastType) continue;
+
+      // Further filter by beanName if roastType is Single Origin or Other Inventory
+      if ((_isSingleOrigin || _isOtherInventory) && record.beanName.trim().toLowerCase() != _beanNameController.text.trim().toLowerCase()) {
+        continue;
+      }
+
+      final recordDate = DateTime.tryParse(record.date);
+      final recordUpdateTime = DateTime.tryParse(record.updateTime ?? '');
+
+      if (recordDate == null) continue;
+
+      if (latestRecord == null || recordDate.isAfter(latestDate!)) {
+        latestRecord = record;
+        latestDate = recordDate;
+        latestUpdateTime = recordUpdateTime;
+      } else if (recordDate.isAtSameMomentAs(latestDate!)) {
+        // If same date, prioritize by update time
+        if (recordUpdateTime != null && latestUpdateTime != null) {
+          if (recordUpdateTime.isAfter(latestUpdateTime)) {
+            latestRecord = record;
+            latestDate = recordDate;
+            latestUpdateTime = recordUpdateTime;
+          }
+        } else if (recordUpdateTime != null && latestUpdateTime == null) {
+          // Current record has update time, latest doesn't
+          latestRecord = record;
+          latestDate = recordDate;
+          latestUpdateTime = recordUpdateTime;
+        } else if (recordUpdateTime == null && latestUpdateTime != null) {
+          // Latest has update time, current doesn't (keep latest)
+          continue;
+        } else {
+          // Neither has update time, or both don't, then prioritize Evening over Morning
+          if (record.shift == 'Evening' && latestRecord.shift == 'Morning') {
+            latestRecord = record;
+            latestDate = recordDate;
+            latestUpdateTime = recordUpdateTime;
+          }
+        }
+      }
+    }
+
+    setState(() {
+      _lastRecordForSelectedType = latestRecord;
     });
   }
 
@@ -1338,6 +1418,7 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
             },
             onSelected: (String selection) {
               controller.text = selection;
+              _fetchAndDisplayLastRecord(); // Fetch last record when bean name is selected
             },
             fieldViewBuilder: (BuildContext context, TextEditingController fieldTextEditingController, FocusNode fieldFocusNode, void Function() onFieldSubmitted) {
               if (fieldTextEditingController.text != controller.text) {
@@ -1354,6 +1435,8 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
                 enabled: enabled,
                 onChanged: (value) {
                   controller.text = value;
+                  // Debounce this call if performance is an issue for frequent typing
+                  _fetchAndDisplayLastRecord();
                 },
               );
             },
@@ -1449,6 +1532,51 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
                 labelText: _isOtherInventory ? 'Item Name (e.g., Cup, Filter)' : 'Bean Name (e.g., Ethiopia Yirgacheffe)',
                 suggestions: _isOtherInventory ? widget.inventoryNameSuggestions : widget.beanNameSuggestions,
               ),
+
+            // --- Last Recorded Values Section ---
+            if (_lastRecordForSelectedType != null)
+              Card(
+                color: Colors.blue.withOpacity(0.05),
+                margin: const EdgeInsets.symmetric(vertical: 20.0),
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Last Recorded Values (${_lastRecordForSelectedType!.date} - ${_lastRecordForSelectedType!.shift})',
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold, color: Colors.blueGrey[700]),
+                      ),
+                      const SizedBox(height: 10),
+                      if (_lastRecordForSelectedType!.updateTime != null)
+                        Text(
+                          'Updated: ${_lastRecordForSelectedType!.updateTime}',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic, color: Colors.grey[600]),
+                        ),
+                      const Divider(height: 20),
+                      if (!_isSingleOrigin && !_isOtherInventory) ...[
+                        _buildLastRecordDetail('Morning In (Grinder):', formatQuantityDisplay(_lastRecordForSelectedType!.morningIn)),
+                        _buildLastRecordDetail('Add On Morning (Grinder):', formatQuantityDisplay(_lastRecordForSelectedType!.addOnMorning)),
+                        _buildLastRecordDetail('Add On Afternoon (Grinder):', formatQuantityDisplay(_lastRecordForSelectedType!.addOnAfternoon)),
+                        _buildLastRecordDetail('Evening Out (Grinder):', formatQuantityDisplay(_lastRecordForSelectedType!.eveningOut)),
+                      ],
+                      _buildLastRecordDetail('Morning Stock:', formatQuantityDisplay(_lastRecordForSelectedType!.morningStock, roastType: _selectedRoastType!)),
+                      _buildLastRecordDetail('Evening Stock:', formatQuantityDisplay(_lastRecordForSelectedType!.eveningStock, roastType: _selectedRoastType!)),
+                      if (!_isOtherInventory) ...[
+                        _buildLastRecordDetail('Throw Away (Shots):', formatQuantityDisplay(_lastRecordForSelectedType!.throwAway, unit: 'shot')),
+                        _buildLastRecordDetail('Test (Shots):', formatQuantityDisplay(_lastRecordForSelectedType!.test, unit: 'shot')),
+                        _buildLastRecordDetail('Event (Shots):', formatQuantityDisplay(_lastRecordForSelectedType!.event, unit: 'shot')),
+                        _buildLastRecordDetail('Employee (Shots):', formatQuantityDisplay(_lastRecordForSelectedType!.employeeShot, unit: 'shot')),
+                      ],
+                      if (_lastRecordForSelectedType!.notes.isNotEmpty)
+                        _buildLastRecordDetail('Notes:', _lastRecordForSelectedType!.notes),
+                    ],
+                  ),
+                ),
+              ),
+            const SizedBox(height: 16.0),
+            // --- End Last Recorded Values Section ---
+
             if (!_isSingleOrigin && !_isOtherInventory) ...[
               if (_isMorningShift)
                 _buildTextField(
@@ -1565,9 +1693,26 @@ class _DailyEntryContentState extends State<DailyEntryContent> {
     );
   }
 
+  Widget _buildLastRecordDetail(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          Text(value),
+        ],
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _dateController.dispose();
+    _beanNameController.removeListener(_fetchAndDisplayLastRecord); // Remove listener
     _beanNameController.dispose();
     _morningInController.dispose();
     _addOnMorningController.dispose();
