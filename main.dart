@@ -87,7 +87,7 @@ class GoogleSheetService {
   String? _spreadsheetId;
 
   final String googleSheetName = 'Daily Checklist';
-  final String worksheetName = 'Copy of Coffee Stock Tracker Table';
+  final String worksheetName = 'Coffee Stock Tracker Table';
 
   Future<bool> initializeSheet() async {
     try {
@@ -305,14 +305,14 @@ String formatQuantityDisplay(dynamic value, {String unit = 'g', String roastType
   final double? parsedValue = double.tryParse(value.toString());
   if (parsedValue == null) return value.toString(); // Fallback if not a number
 
-  // For Other Inventory, show 0 instead of N/A if value is 0
-  if (roastType == 'Other Inventory' || unit == 'units') { // Added unit == 'units' for general non-gram items
+  // For Other Inventory or generic units, show 0 instead of N/A if value is 0
+  if (roastType == 'Other Inventory' || unit == 'units') {
     if (parsedValue == 0) return '0';
     return parsedValue == parsedValue.toInt() ? "${parsedValue.toInt()}" : parsedValue.toStringAsFixed(parsedValue.truncateToDouble() == parsedValue ? 0 : 2);
   }
 
-  // For coffee grams
-  if (parsedValue == 0) return 'N/A'; // For grams, N/A if 0
+  // For coffee grams (default unit)
+  if (parsedValue == 0) return '0g'; // Changed from 'N/A' to '0g' for consistency
   return parsedValue == parsedValue.toInt() ? "${parsedValue.toInt()}g" : "${parsedValue.toStringAsFixed(parsedValue.truncateToDouble() == parsedValue ? 0 : 2)}g";
 }
 
@@ -703,8 +703,7 @@ class _MainScreenState extends State<MainScreen> {
       recordToPass = record;
       rowIndexToPass = rowIndex;
     } else {
-      // If not within 1 hour, treat it as a new entry template.
-      // Create a new Record object with current date/shift, but copy roastType/beanName.
+      // Not within 1 hour, treat it as a new entry template.
       recordToPass = Record(
         date: currentDate, // Set to current date
         shift: currentShift, // Set to current shift based on time
@@ -724,7 +723,7 @@ class _MainScreenState extends State<MainScreen> {
         notes: '',
         updateTime: null, // Clear update time for new entry
         rowIndex: null, // Important: Nullify rowIndex to ensure it's treated as a new entry
-        minimumStock: record.minimumStock, // NEW: Pass the minimum stock to the templated record
+        minimumStock: record.minimumStock, // Pass the minimum stock to the templated record
       );
       rowIndexToPass = null;
     }
@@ -1073,15 +1072,23 @@ class _DashboardContentState extends State<DashboardContent> {
       coffeeName = item.roastType;
     }
     String mainStockAmountDisplay = 'N/A';
-    String grinderAmountDisplay = 'N/A';
     Color amountColorGrinder = Colors.green[600]!; // Default green
     Color amountColorMain = Colors.blueGrey[900]!;
     Color cardColor = Colors.blueGrey.shade50; // Default for normal stock items
     FontWeight mainStockFontWeight = FontWeight.bold; // Default to bold
 
-    double overallStockAmount = item.eveningStock;
-    if (overallStockAmount == 0) {
-      overallStockAmount = item.morningStock;
+    double overallStockAmount;
+    if (item.roastType == 'Single Origin' || item.roastType == 'Other Inventory') {
+      overallStockAmount = item.eveningStock;
+      if (overallStockAmount == 0) {
+        overallStockAmount = item.morningStock;
+      }
+    } else { // Light Roast or Medium Roast
+      if (item.shift == 'Morning') {
+        overallStockAmount = item.morningStock + item.morningIn + item.addOnMorning;
+      } else { // Evening shift
+        overallStockAmount = item.eveningStock + item.eveningOut + item.addOnAfternoon;
+      }
     }
     mainStockAmountDisplay = formatQuantityDisplay(overallStockAmount, unit: 'g', roastType: item.roastType);
 
@@ -1090,11 +1097,11 @@ class _DashboardContentState extends State<DashboardContent> {
 
     // Logic for main stock color and card background
     if (item.minimumStock != null && item.minimumStock! > 0 && parsedMainStockAmount != null) {
-      if (parsedMainStockAmount <= item.minimumStock!) { // Changed from < to <=
+      if (parsedMainStockAmount <= item.minimumStock!) {
         cardColor = Colors.red.shade300; // Stronger red for card background
         amountColorMain = Colors.red[900]!; // Darker red for text
         mainStockFontWeight = FontWeight.w900; // Extra bold
-      } else if (parsedMainStockAmount <= (item.minimumStock! * 1.5) && item.roastType != 'Other Inventory') { // Example: within 150% of min stock
+      } else if (parsedMainStockAmount <= (item.minimumStock! * 1.5) && item.roastType != 'Other Inventory') {
         cardColor = Colors.orange.shade200; // More noticeable orange for approaching low stock
         amountColorMain = Colors.orange[900]!; // Darker orange for text
       }
@@ -1106,34 +1113,55 @@ class _DashboardContentState extends State<DashboardContent> {
 
 
     if (item.roastType != 'Single Origin' && item.roastType != 'Other Inventory') {
-      double grinderCalculation = 0.0;
-      // Display morning in for morning shift, evening out for evening shift
+      double grinderValue = 0.0;
+      double addOnValue = 0.0;
       if (item.shift == 'Morning') {
-        grinderCalculation = item.morningIn; // Show morning in
+        grinderValue = item.morningIn;
+        addOnValue = item.addOnMorning;
       } else if (item.shift == 'Evening') {
-        grinderCalculation = item.eveningOut; // Show evening out
+        grinderValue = item.eveningOut;
+        addOnValue = item.addOnAfternoon;
       }
-      grinderAmountDisplay = formatQuantityDisplay(grinderCalculation, unit: 'g', roastType: item.roastType);
-      final double? parsedGrinderAmount = double.tryParse(grinderAmountDisplay.replaceAll('g', '').replaceAll('N/A', '0'));
+      double grinderAddOnTotal = grinderValue + addOnValue;
 
-      // Grinder text color logic
-      if (parsedGrinderAmount == 0) {
+      // Grinder text color logic (re-applied here for the specific grinder line)
+      if (grinderValue == 0) {
         amountColorGrinder = Colors.grey;
-      } else if (parsedGrinderAmount != null && parsedGrinderAmount > 0 && parsedGrinderAmount <= 100) {
+      } else if (grinderValue > 0 && grinderValue <= 100) {
         amountColorGrinder = Colors.red[500]!; // Grinder-specific low threshold
       }
 
       // Override grinder color if overall stock is below minimum for the item
-      if (item.minimumStock != null && item.minimumStock! > 0 && parsedMainStockAmount != null && parsedMainStockAmount <= item.minimumStock!) { // Changed from < to <=
+      if (item.minimumStock != null && item.minimumStock! > 0 && parsedMainStockAmount != null && parsedMainStockAmount <= item.minimumStock!) {
         amountColorGrinder = Colors.red[900]!; // Make grinder text red if overall item is critically low
       }
 
-    } else {
-      grinderAmountDisplay = "N/A";
     }
 
     // Directly use item.rowIndex
     final int? rowIndexForEdit = item.rowIndex;
+
+    // Debug prints to trace values
+    debugPrint('DEBUG: Building Stock Card for ${item.roastType} - ${item.beanName}');
+    debugPrint('DEBUG: Shift: ${item.shift}');
+    debugPrint('DEBUG: Raw morningIn: ${item.morningIn}, addOnMorning: ${item.addOnMorning}');
+    debugPrint('DEBUG: Raw eveningOut: ${item.eveningOut}, addOnAfternoon: ${item.addOnAfternoon}');
+
+    double grinderValue = 0.0;
+    double addOnValue = 0.0;
+    if (item.shift == 'Morning') {
+      grinderValue = item.morningIn;
+      addOnValue = item.addOnMorning;
+    } else if (item.shift == 'Evening') {
+      grinderValue = item.eveningOut;
+      addOnValue = item.addOnAfternoon;
+    }
+    double grinderAddOnTotal = grinderValue + addOnValue;
+
+    debugPrint('DEBUG: Calculated grinderValue: $grinderValue');
+    debugPrint('DEBUG: Calculated addOnValue: $addOnValue');
+    debugPrint('DEBUG: Calculated grinderAddOnTotal: $grinderAddOnTotal');
+
 
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
@@ -1177,13 +1205,13 @@ class _DashboardContentState extends State<DashboardContent> {
                         Row(
                           children: [
                             Text(
-                              "Overall: ${mainStockAmountDisplay}",
+                              "Overall: ${formatQuantityDisplay(overallStockAmount, unit: 'g', roastType: item.roastType)}", // Use overallStockAmount here
                               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                                     fontWeight: mainStockFontWeight, // Apply dynamic font weight
                                     color: amountColorMain, // Apply dynamic color
                                   ),
                             ),
-                            if (item.minimumStock != null && item.minimumStock! > 0 && parsedMainStockAmount != null && parsedMainStockAmount <= item.minimumStock!) // Changed from < to <=
+                            if (item.minimumStock != null && item.minimumStock! > 0 && parsedMainStockAmount != null && parsedMainStockAmount <= item.minimumStock!)
                               Padding(
                                 padding: const EdgeInsets.only(left: 8.0),
                                 child: Icon(Icons.warning, color: Colors.red[800], size: 24), // Warning icon
@@ -1199,19 +1227,50 @@ class _DashboardContentState extends State<DashboardContent> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
+                          // Grinder Display (first line)
                           Text(
-                            "Grinder: ${grinderAmountDisplay}",
-                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            "Grinder: ${formatQuantityDisplay(grinderValue, unit: 'g', roastType: item.roastType)}",
+                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
                                   fontWeight: FontWeight.bold,
-                                  color: amountColorGrinder, // Apply dynamic color
+                                  color: amountColorGrinder,
                                 ),
                           ),
                           Text("in grinder", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
+                          const SizedBox(height: 4),
+
+                          // Add On Display (second line) - ALWAYS DISPLAY
+                          Text(
+                            "Add On: ${formatQuantityDisplay(addOnValue, unit: 'g', roastType: item.roastType)}",
+                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.blueGrey[700],
+                                ),
+                          ),
+                          Text("added to stock", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
+                          const SizedBox(height: 4),
+
+                          // Total (Grinder + Add-on) Display (third line) - ALWAYS DISPLAY
+                          Text(
+                            "Total: ${formatQuantityDisplay(grinderAddOnTotal, unit: 'g', roastType: item.roastType)}",
+                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.blueGrey[900],
+                                ),
+                          ),
+                          Text("grinder + add-on", style: TextStyle(color: Colors.grey[500], fontSize: 10)),
                         ],
                       ),
                     ),
                 ],
               ),
+              if (item.minimumStock != null && item.minimumStock! > 0)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8.0),
+                  child: Text(
+                    "Minimum: ${formatQuantityDisplay(item.minimumStock, unit: item.roastType.contains('Roast') || item.roastType == 'Single Origin' ? 'g' : 'units')}",
+                    style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic, color: Colors.blueGrey[500]),
+                  ),
+                ),
               if (item.notes.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 8.0),
